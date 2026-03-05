@@ -6,9 +6,11 @@ core/models.py — データ型定義（Pydantic / Enum）
 dictの暗黙的なキーアクセスを排除する。
 """
 
-from pydantic import BaseModel, Field, field_validator
+from datetime import datetime
 from typing import Optional
 from enum import Enum
+
+from pydantic import BaseModel, Field, field_validator
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -124,6 +126,7 @@ class OrderResult(BaseModel):
     price: float = 0.0
     requested_price: float = 0.0
     slippage_points: float = 0.0
+    spread_at_entry: float = 0.0
     retcode: int = 0
     error: Optional[str] = None
     comment: str = ""
@@ -190,26 +193,20 @@ class AIEmergencyResponse(BaseModel):
 # ═══════════════════════════════════════════════════════════════
 
 class PositionInfo(BaseModel):
-    """MT5ポジションとThesis情報を統合した構造体"""
-    trade_id: str
+    """MT5ポジション情報（MT5生データ直接マッピング）"""
     ticket: int
     symbol: str
     direction: Direction
-    lot_size: float
-    entry_price: float
+    volume: float
+    open_price: float
     current_price: float = 0.0
-    pnl_pips: float = 0.0
-    pnl_jpy: float = 0.0
-    initial_tp: float
-    emergency_sl: float
-    thesis_text: str = ""
-    invalidation_conditions: list[str] = Field(default_factory=list)
-    risk_multiplier: float = 1.0
-    market_regime: str = ""
-    ai_confidence: float = 0.0
-    hold_hours: float = 0.0
-    broker_entry_time: str = ""
-    spread_at_entry: float = 0.0
+    sl: float = 0.0
+    tp: float = 0.0
+    profit: float = 0.0
+    swap: float = 0.0
+    open_time: Optional[datetime] = None
+    magic: int = 0
+    comment: str = ""
 
 
 # ═══════════════════════════════════════════════════════════════
