@@ -90,9 +90,9 @@ class RiskGuardian:
 
         dd_pct = abs(min(0, daily_pnl)) / balance * 100
 
-        if dd_pct >= CONFIG.DAILY_MAX_DD_PCT:
+        if dd_pct >= CONFIG.MAX_DAILY_DRAWDOWN_PCT:
             await self._trigger_circuit_breaker(
-                f"DD {dd_pct:.1f}% >= {CONFIG.DAILY_MAX_DD_PCT}%",
+                f"DD {dd_pct:.1f}% >= {CONFIG.MAX_DAILY_DRAWDOWN_PCT}%",
                 daily_pnl,
                 dd_pct,
             )
