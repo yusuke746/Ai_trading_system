@@ -135,11 +135,14 @@ class PromptBuilder:
                 f"複数戦略の一致は信頼度向上要因として考慮してください。"
             )
 
+        now_xmt = BrokerTime.now()
+        weekday_ja = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"][now_xmt.weekday()]
+
         user_content = (
             f"テクニカルシグナル: {json.dumps(tech_data, ensure_ascii=False)}\n"
             f"現在値: {webhook_data.get('price')}\n"
             f"セッション(XMT): {session}\n"
-            f"現在時刻(XMT): {BrokerTime.now_str()}\n"
+            f"現在時刻(XMT): {BrokerTime.now_str()} ({weekday_ja})\n"
             f"H1トレンド: {h1_trend}\n"
             f"口座状況: 総エクスポージャー {exposure_pct:.1f}% / 保有ポジ {pos_count}件\n"
             f"相関アラート: {correlation_text}\n"

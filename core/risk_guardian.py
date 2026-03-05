@@ -131,6 +131,10 @@ class RiskGuardian:
         if BrokerTime.is_dead_zone():
             return False, "DEAD_ZONE: XMT 22:00-23:59 はエントリー禁止"
 
+        # 金曜カットオフ（statusに関係なくリアルタイム判定）
+        if BrokerTime.is_friday_cutoff():
+            return False, f"FRIDAY_CUTOFF: 金曜XMT {CONFIG.FRIDAY_ENTRY_CUTOFF_HOUR}:00以降はエントリー禁止"
+
         # 祝日チェック
         if BrokerTime.is_holiday():
             return False, "HOLIDAY: 祝日のためエントリー禁止"
