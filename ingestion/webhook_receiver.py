@@ -220,7 +220,7 @@ async def receive_webhook(request: Request):
 
     logger.info(
         f"Webhook受信: {payload.symbol} {payload.direction} "
-        f"price={payload.price} strategy={payload.strategy} source={payload.source}"
+        f"price={payload.price} pattern={payload.pattern} source={payload.source}"
     )
 
     # 非同期でエントリー評価パイプラインを起動
