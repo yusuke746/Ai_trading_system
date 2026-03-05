@@ -445,28 +445,56 @@ class SystemStatus(str, Enum):
 
 # ─── Webhook受信データ ───
 class WebhookPayload(BaseModel):
-    """TradingViewから受信するWebhook JSON"""
+    """
+    TradingViewから受信するWebhook JSON。
+    カスタムインジケータは全フィールドを含む。
+    外部インジケータ（LuxAlgo, Lorentzian等）は部分フィールドのみ。
+    不足データはwebhook_receiver.pyがMT5から補完する。
+    """
     secret: str
     symbol: str
     direction: Direction
     timeframe: str = "M15"
-    h1_trend: str                # BULLISH / BEARISH
-    ema21: float
-    ema50: float
-    rsi: float = Field(ge=0, le=100)
-    atr: float = Field(gt=0)
-    atr_ratio: float
+    h1_trend: str = ""               # BULLISH / BEARISH / ""（外部インジケータは空）
     price: float = Field(gt=0)
-    pattern: str                 # EMA_PULLBACK_LONG等
-    broker_time: str             # TradingViewからの時刻文字列
+    pattern: str                     # EMA_CROSS, BREAKOUT, FVG_FILL, LORENTZIAN等
+
+    # テクニカルコンテキスト（Optional: 外部インジケータではNone → サーバー側で補完）
+    ema21: Optional[float] = None
+    ema50: Optional[float] = None
+    ema200: Optional[float] = None
+    rsi: Optional[float] = Field(default=None, ge=0, le=100)
+    atr: Optional[float] = Field(default=None, gt=0)
+    atr_ratio: Optional[float] = None
+    volume_ratio: float = 1.0
+
+    # 追加コンテキスト（カスタムインジケータのみ）
+    macd: Optional[float] = None
+    macd_signal: Optional[float] = None
+    macd_hist: Optional[float] = None
+    bb_upper: Optional[float] = None
+    bb_lower: Optional[float] = None
+    dc_upper: Optional[float] = None
+    dc_lower: Optional[float] = None
+
+    # メタデータ
+    broker_time: str = ""            # TradingViewからの時刻文字列（参考値）
+    source: str = "custom_multistrat"  # custom_multistrat / luxalgo_fvg / luxalgo_sweep / lorentzian
 
     @field_validator("symbol")
     @classmethod
     def symbol_must_be_valid(cls, v):
+        # XMTではGOLD（TradingViewではXAUUSDの場合もある）
+        symbol_map = {"XAUUSD": "GOLD"}
+        v = symbol_map.get(v, v)
         valid = ("USDJPY", "EURUSD", "GOLD")
         if v not in valid:
             raise ValueError(f"無効なsymbol: {v} (有効: {valid})")
         return v
+
+    def needs_supplement(self) -> bool:
+        """MT5からのデータ補完が必要か判定"""
+        return self.rsi is None or self.atr is None or self.ema21 is None
 
 
 # ─── MT5注文結果 ───
@@ -1233,22 +1261,13 @@ def verify_webhook(payload: dict) -> bool:
 
 **受信JSONスキーマ:**
 
-```json
-{
-  "secret":      "your_webhook_secret_here",
-  "symbol":      "USDJPY",
-  "direction":   "LONG",
-  "timeframe":   "M15",
-  "h1_trend":    "BULLISH",
-  "ema21":       149.50,
-  "ema50":       149.20,
-  "rsi":         58.3,
-  "atr":         0.082,
-  "atr_ratio":   1.15,
-  "price":       149.55,
-  "pattern":     "EMA_PULLBACK_LONG",
-  "broker_time": "2024-01-15 14:30"
-}
+カスタムインジケータと外部インジケータで含まれるフィールドが異なる。
+詳細は Section 8「Webhook送信JSON」および Section 7.1b `WebhookPayload` モデルを参照。
+
+```python
+# カスタムインジケータ: 全フィールド含む（rsi, atr, ema21等）
+# 外部インジケータ:     部分フィールド（rsi, atr, ema21等はNone）
+# → needs_supplement() で判定し、MT5からデータ補完
 ```
 
 **バリデーション:**
@@ -1332,6 +1351,92 @@ def is_spread_acceptable(symbol: str) -> tuple[bool, float]:
 > `symbol_info().point` で割ることで、全銘柄統一のpoints単位に変換する。
 > 正規化しないと、USDJPYで 0.015 < 30 の比較になり、
 > スプレッドが異常に広くても常に許容されてしまう致命的バグになる。
+
+**サーバー側データ補完（外部インジケータ対応）:**
+
+```python
+import numpy as np
+
+async def supplement_technical_data(payload: WebhookPayload) -> WebhookPayload:
+    """
+    外部インジケータ（LuxAlgo, Lorentzian等）からのWebhookに
+    不足しているテクニカルデータをMT5から取得して補完する。
+
+    カスタムインジケータからのWebhookは全フィールド含むため補完不要。
+    """
+    if not payload.needs_supplement():
+        return payload  # カスタムインジケータ → 補完不要
+
+    # M15足データをMT5から取得（EMA200に必要な210本）
+    rates = mt5.copy_rates_from_pos(payload.symbol, mt5.TIMEFRAME_M15, 0, 210)
+    if rates is None or len(rates) < 200:
+        logger.warning(f"MT5データ取得失敗: {payload.symbol}, 補完スキップ")
+        return payload
+
+    closes = np.array([r['close'] for r in rates])
+    highs  = np.array([r['high']  for r in rates])
+    lows   = np.array([r['low']   for r in rates])
+
+    # EMA計算（pandas不使用・numpy版）
+    def calc_ema(data, period):
+        ema = np.zeros_like(data)
+        ema[0] = data[0]
+        k = 2 / (period + 1)
+        for i in range(1, len(data)):
+            ema[i] = data[i] * k + ema[i-1] * (1 - k)
+        return ema[-1]
+
+    # RSI計算
+    def calc_rsi(data, period=14):
+        deltas = np.diff(data[-(period+1):])
+        gains = np.where(deltas > 0, deltas, 0)
+        losses = np.where(deltas < 0, -deltas, 0)
+        avg_gain = np.mean(gains)
+        avg_loss = np.mean(losses)
+        if avg_loss == 0:
+            return 100.0
+        rs = avg_gain / avg_loss
+        return round(100 - 100 / (1 + rs), 2)
+
+    # ATR計算
+    def calc_atr(highs, lows, closes, period=14):
+        tr = np.maximum(
+            highs[-period:] - lows[-period:],
+            np.maximum(
+                np.abs(highs[-period:] - np.roll(closes, 1)[-period:]),
+                np.abs(lows[-period:]  - np.roll(closes, 1)[-period:])
+            )
+        )
+        return float(np.mean(tr))
+
+    # 補完
+    if payload.ema21 is None:
+        payload.ema21 = round(calc_ema(closes, 21), 5)
+    if payload.ema50 is None:
+        payload.ema50 = round(calc_ema(closes, 50), 5)
+    if payload.ema200 is None:
+        payload.ema200 = round(calc_ema(closes, 200), 5)
+    if payload.rsi is None:
+        payload.rsi = calc_rsi(closes)
+    if payload.atr is None:
+        payload.atr = round(calc_atr(highs, lows, closes), 5)
+    if payload.atr_ratio is None and payload.atr is not None:
+        atr_sma = float(np.mean([calc_atr(highs[:i+14], lows[:i+14], closes[:i+14])
+                                  for i in range(max(0, len(closes)-20), len(closes)-13)]))
+        payload.atr_ratio = round(payload.atr / atr_sma, 2) if atr_sma > 0 else 1.0
+
+    # H1トレンド補完（空の場合）
+    if not payload.h1_trend:
+        h1_ema21 = calc_ema(closes, 21 * 4)  # M15×4 ≈ H1
+        h1_ema50 = calc_ema(closes, 50 * 4)
+        payload.h1_trend = "BULLISH" if h1_ema21 > h1_ema50 else "BEARISH"
+
+    logger.info(f"データ補完完了: {payload.symbol} ({payload.source})")
+    return payload
+```
+
+> **呼び出し位置**: `webhook_receiver.py` のバリデーション通過後、
+> `entry_evaluator.py` にペイロードを渡す前に実行する。
 
 ---
 
@@ -1930,74 +2035,198 @@ scheduler.add_job(
 
 ## 8. TradingView Pine Script仕様
 
-### エントリーシグナル条件（H1フィルター + M15トリガー）
+> **戦略コード・セットアップ手順の詳細**: `pinescript/` ディレクトリを参照。
+> - `pinescript/multi_strategy_signal.pine` — カスタムインジケータのソースコード
+> - `pinescript/SETUP_GUIDE.md` — インジケータ配置・アラート設定・運用チューニング手順
 
-**H1フィルター（全条件を満たすこと）:**
+### インジケータ構成（5スロット制約）
 
-```
-条件1 [トレンド方向]:
-  LONG:  終値 > EMA21 > EMA50
-  SHORT: 終値 < EMA21 < EMA50
+| # | インジケータ | 種別 | 役割 |
+|---|-------------|------|------|
+| 1 | **AI Trading Signal Generator v1.0** | カスタム | 5戦略統合メインシグナル |
+| 2 | **LuxAlgo - Fair Value Gap** | 外部 | 構造的インバランス（FVG充填） |
+| 3 | **LuxAlgo - Liquidity Sweeps** | 外部 | 流動性スイープ反転 |
+| 4 | **Lorentzian Classification** | 外部 | ML分類（確認・コンテキスト） |
+| 5 | **Q-Trend** | 外部 | トレンド方向の視覚確認のみ |
 
-条件2 [モメンタム確認 RSI(14)]:
-  LONG:  45 <= RSI <= 70（過熱なし・勢いあり）
-  SHORT: 30 <= RSI <= 55
-
-条件3 [ボラティリティフィルター ATR(14)]:
-  現在ATR >= 過去20本平均ATR × 0.8
-  （相場が動いている状態であることを確認）
-```
-
-**M15エントリートリガー（H1条件成立中に）:**
+### 戦略定義（カスタムインジケータ・5戦略）
 
 ```
-LONG エントリー:
-  M15 EMA9 が EMA21 を上抜けた足の確定時
+┌─────────────────────────────────────────────────────────────────┐
+│  戦略1: EMA_CROSS（トレンド開始）          頻度: 週1〜2回/銘柄  │
+├─────────────────────────────────────────────────────────────────┤
+│  LONG:  EMA21がEMA50を上抜け AND 終値 > EMA200               │
+│  SHORT: EMA21がEMA50を下抜け AND 終値 < EMA200               │
+│  用途:  新しいトレンドの「始まり」を捉える                      │
+│  特徴:  発生頻度が低く、品質が高い                              │
+└─────────────────────────────────────────────────────────────────┘
 
-SHORT エントリー:
-  M15 EMA9 が EMA21 を下抜けた足の確定時
+┌─────────────────────────────────────────────────────────────────┐
+│  戦略2: TREND_PULLBACK（トレンド継続）     頻度: 週3〜5回/銘柄  │
+├─────────────────────────────────────────────────────────────────┤
+│  LONG:  上昇トレンド(EMA21>EMA50>EMA200)中に                  │
+│         安値がEMA21に到達 + 終値がEMA21の上で引ける             │
+│         + RSI 40〜65（ニュートラルゾーン）                      │
+│  SHORT: 下降トレンド中に高値がEMA21に到達 + 終値がEMA21の下     │
+│         + RSI 35〜60                                           │
+│  用途:  トレンドの「押し目/戻り」を捉える                      │
+│  特徴:  勝率が高いが、トレンドレス相場では不発                  │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  戦略3: BREAKOUT（レンジブレイク）         頻度: 週1〜3回/銘柄  │
+├─────────────────────────────────────────────────────────────────┤
+│  LONG:  終値 > 20期間高値(Donchian上限) + 出来高 > 平均×1.3    │
+│         + 強い下降トレンドでないこと                             │
+│  SHORT: 終値 < 20期間安値(Donchian下限) + 出来高 > 平均×1.3    │
+│         + 強い上昇トレンドでないこと                             │
+│  用途:  レンジからの「脱出」を捉える                           │
+│  特徴:  出来高フィルターでダマシを抑制                          │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  戦略4: RSI_DIVERGENCE（モメンタム乖離）   頻度: 週1〜2回/銘柄  │
+├─────────────────────────────────────────────────────────────────┤
+│  LONG:  価格が安値更新 + RSIが安値を更新しない（強気乖離）      │
+│         + RSI < 45 + ピボットポイント確認済み(3バー)            │
+│  SHORT: 価格が高値更新 + RSIが高値を更新しない（弱気乖離）      │
+│         + RSI > 55 + ピボットポイント確認済み                   │
+│  用途:  トレンド「転換」の兆候を捉える                         │
+│  特徴:  ピボット確認のため3バー(M15=45分)の遅延あり            │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  戦略5: MEAN_REVERSION（過延伸反転）       頻度: 週2〜4回/銘柄  │
+├─────────────────────────────────────────────────────────────────┤
+│  LONG:  終値 <= BB下限 + RSI < 30 + 強い下降トレンドでない     │
+│  SHORT: 終値 >= BB上限 + RSI > 70 + 強い上昇トレンドでない     │
+│  用途:  行き過ぎた動きの「逆張り」                             │
+│  特徴:  トレンド相場では危険。レンジ相場での有効性が高い        │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**Webhook送信JSON（Alert Message）:**
+### 外部インジケータ戦略
+
+| パターン名 | インジケータ | 検出対象 |
+|-----------|-------------|---------|
+| `FVG_FILL` | LuxAlgo FVG | Fair Value Gap（価格の空白地帯）が充填される構造的エントリー |
+| `LIQUIDITY_SWEEP` | LuxAlgo Sweeps | 流動性プール（前回高値/安値）をスイープ後の反転 |
+| `LORENTZIAN` | Lorentzian Classification | 機械学習ベースの方向分類（Lorentzian距離法） |
+
+### シグナル優先度（1バー最大1シグナル）
+
+カスタムインジケータ内で複数条件が同時成立した場合の選択順序:
+
+```
+優先度1: BREAKOUT        ← 最もレア・高確信度
+優先度2: EMA_CROSS       ← トレンド転換
+優先度3: RSI_DIVERGENCE  ← 反転シグナル
+優先度4: TREND_PULLBACK  ← 継続シグナル
+優先度5: MEAN_REVERSION  ← 逆張り（最も慎重に扱う）
+```
+
+### グローバルフィルター（Pine Script内蔵）
+
+全戦略に共通で適用されるフィルター:
+
+| フィルター | 条件 | 目的 |
+|-----------|------|------|
+| セッションフィルター | XMT 9:00〜22:00のみ | ロンドン+NY時間に限定 |
+| ATRフィルター | ATR / ATR20平均 >= 0.8 | 低ボラティリティ期間の除外 |
+| クールダウン | 同方向シグナル間 4バー(1時間)以上 | 連続シグナルの抑制 |
+| データ量チェック | EMA200計算に十分なバー数 | 起動直後の不正シグナル防止 |
+
+### アラート配分（20スロット制約）
+
+```
+カスタム Signal Generator:  3アラート（GOLD/USDJPY/EURUSD × 1）
+  → 「任意のalert()関数の呼び出し」条件で全5戦略を1アラートに集約
+
+LuxAlgo FVG:               6アラート（3銘柄 × BUY/SELL）
+LuxAlgo Sweeps:            6アラート（3銘柄 × BUY/SELL）
+Lorentzian Classification: 4アラート（GOLD/USDJPY × BUY/SELL）
+予備:                      1アラート
+合計:                      20アラート
+```
+
+### Webhook送信JSON
 
 > **⭐ `{{timenow}}` のタイムゾーンに関する重要な注意:**
 > TradingViewの `{{timenow}}` は **Exchange timezone**（取引所のタイムゾーン）で出力される。
 > これはXMTサーバー時間とは異なる可能性がある（例: USDJPYはCME timezoneで出力される）。
 >
-> **Pine Script作成時の対応策:**
-> 1. `broker_time` フィールドには `{{timenow}}` ではなく `{{time}}` （UTCエポック秒）を使用する
-> 2. Python側でUTCエポック秒 → XMT時間に変換する（`BrokerTime.from_utc()`）
-> 3. または `{{timenow}}` を「参考値」に留め、実際の処理時刻はサーバー側で `BrokerTime.now()` を使用
->
-> **推奨**: 方法3（`{{timenow}}` を参考値として保持、処理はサーバー側のBrokerTime.now()）
+> **推奨**: `broker_time` を「参考値」に留め、実際の処理時刻はサーバー側で `BrokerTime.now()` を使用。
 > これにより、Pine Script側でタイムゾーン変換を行う必要がなくなる。
+
+**カスタムインジケータ（全フィールド自動生成）:**
 
 ```json
 {
-  "symbol":      "{{ticker}}",
-  "direction":   "LONG",
-  "timeframe":   "M15",
-  "h1_trend":    "BULLISH",
-  "ema21":       {{plot("EMA21")}},
-  "ema50":       {{plot("EMA50")}},
-  "rsi":         {{plot("RSI")}},
-  "atr":         {{plot("ATR")}},
-  "atr_ratio":   {{plot("ATR_RATIO")}},
-  "price":       {{close}},
-  "pattern":     "EMA_PULLBACK_LONG",
-  "broker_time": "{{timenow}}"
+  "secret":       "webhook_secret_value",
+  "symbol":       "GOLD",
+  "direction":    "LONG",
+  "timeframe":    "15",
+  "h1_trend":     "BULLISH",
+  "pattern":      "BREAKOUT",
+  "price":        2650.50,
+  "ema21":        2648.123,
+  "ema50":        2645.678,
+  "ema200":       2620.345,
+  "rsi":          58.42,
+  "atr":          3.25,
+  "atr_ratio":    1.15,
+  "macd":         0.85,
+  "macd_signal":  0.62,
+  "macd_hist":    0.23,
+  "bb_upper":     2660.12,
+  "bb_lower":     2635.45,
+  "volume_ratio": 1.82,
+  "dc_upper":     2655.00,
+  "dc_lower":     2630.00,
+  "broker_time":  "2026-03-05T15:30:00",
+  "source":       "custom_multistrat"
 }
 ```
 
-> **実装時の注意**: `broker_time` はログ記録・デバッグ用として保存するが、
-> 実際の時刻判定（セッション判定・金曜カットオフ等）には必ず `BrokerTime.now()` を使用すること。
-> Webhookの `broker_time` は信頼しない（TV側のExchange timezoneのため）。
+**外部インジケータ（部分フィールド ─ サーバー側で補完）:**
 
-**Webhook設定（TradingView）:**
+```json
+{
+  "secret":      "webhook_secret_value",
+  "symbol":      "GOLD",
+  "direction":   "LONG",
+  "timeframe":   "15",
+  "h1_trend":    "",
+  "pattern":     "FVG_FILL",
+  "price":       2650.50,
+  "broker_time": "2026-03-05T15:30:00",
+  "source":      "luxalgo_fvg"
+}
+```
+
+> **サーバー側データ補完**: 外部インジケータのWebhookにはRSI/ATR/EMA等が含まれない。
+> `webhook_receiver.py` がMT5の `copy_rates_from_pos()` を使用して不足データを取得し、
+> WebhookPayloadを補完してからAI評価に渡す（Section 7.1b WebhookPayloadモデル参照）。
+
+### Webhook共通設定
 
 - URL: `http://{VPS_IP}:{PORT}/webhook/tradingview`
-- 対象銘柄: USDJPY, EURUSD, GOLD それぞれに設定
+- 対象銘柄: USDJPY, EURUSD, GOLD それぞれにM15チャートで設定
 - Alert条件: 「Once Per Bar Close」に設定（M15足確定時のみ送信）
+- Alert有効期限: 「Open-ended alert」（無期限）
+
+### シグナル推定頻度
+
+```
+カスタム:      8〜16 /週/銘柄 × 3 = 24〜48 /週
+LuxAlgo FVG:  3〜8  /週/銘柄 × 3 = 9〜24  /週
+Sweeps:       2〜5  /週/銘柄 × 3 = 6〜15  /週
+Lorentzian:   5〜10 /週/銘柄 × 2 = 10〜20 /週
+
+合計: 約50〜107 シグナル/週
+AI承認率 15〜30% → 約8〜32 トレード/週
+目標: 月30〜80トレード
+```
 
 ---
 

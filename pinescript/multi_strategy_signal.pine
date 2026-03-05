@@ -1,0 +1,385 @@
+// ═══════════════════════════════════════════════════════════════════
+// AI Trading Multi-Strategy Signal Generator v1.0
+// ═══════════════════════════════════════════════════════════════════
+// 概要:
+//   5つの独立した戦略でLONG/SHORTシグナルを生成し、
+//   Webhook JSON形式でFastAPIサーバーに送信する。
+//   AIフィルター（GPT-4o）の前段として機能する「高リコール」設計。
+//
+// 戦略一覧:
+//   1. EMA_CROSS      - EMA21/50クロス + EMA200トレンド確認
+//   2. TREND_PULLBACK  - トレンド中のEMA21プルバック反転
+//   3. BREAKOUT        - ドンチャンチャネルブレイク + 出来高確認
+//   4. RSI_DIVERGENCE  - RSIダイバージェンス（ピボットベース）
+//   5. MEAN_REVERSION  - BB + RSI極値の反転
+//
+// 使い方:
+//   1. GOLD, USDJPY, EURUSD 各M15チャートに追加
+//   2. 各チャートで1つのアラートを作成
+//      条件: 「任意のalert()関数の呼び出し」
+//      Webhook URL: http://{VPS_IP}:{PORT}/webhook/tradingview
+//   3. アラートメッセージは自動生成（変更不要）
+//
+// 注意:
+//   - Alert条件は「Once Per Bar Close」に設定すること
+//   - 1バーにつき最大1シグナルのみ発火（優先度順）
+//   - secret入力欄にWebhook認証トークンを設定すること
+// ═══════════════════════════════════════════════════════════════════
+
+//@version=5
+indicator("AI Trading Signal Generator v1.0", overlay=true, max_labels_count=50, max_bars_back=500)
+
+
+// ═══════════════════════════════════════════════════════════════════
+// INPUT PARAMETERS
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── Webhook認証 ───
+i_secret = input.string("", "Webhook Secret", tooltip="FastAPI側のWEBHOOK_SECRETと同じ値を設定", group="Webhook")
+
+// ─── EMA設定 ───
+i_ema_fast   = input.int(21,  "EMA Fast",  minval=5,   group="EMA")
+i_ema_mid    = input.int(50,  "EMA Mid",   minval=10,  group="EMA")
+i_ema_slow   = input.int(200, "EMA Slow",  minval=50,  group="EMA")
+
+// ─── RSI設定 ───
+i_rsi_len    = input.int(14,  "RSI Length", minval=2,   group="RSI")
+i_rsi_ob     = input.int(70,  "RSI Overbought", group="RSI")
+i_rsi_os     = input.int(30,  "RSI Oversold",   group="RSI")
+
+// ─── ATR設定 ───
+i_atr_len    = input.int(14,  "ATR Length", minval=2,   group="ATR")
+
+// ─── ブレイクアウト設定 ───
+i_breakout_len     = input.int(20,    "Donchian Period",    minval=5,   group="Breakout")
+i_breakout_vol     = input.float(1.3, "Volume Multiplier",  minval=1.0, group="Breakout")
+
+// ─── ミーンリバーション設定 ───
+i_bb_len     = input.int(20,    "BB Length",     minval=5,   group="Mean Reversion")
+i_bb_mult    = input.float(2.0, "BB Multiplier", minval=1.0, group="Mean Reversion")
+
+// ─── ダイバージェンス設定 ───
+i_pivot_len  = input.int(3, "Pivot Lookback", minval=2, maxval=10, group="Divergence")
+
+// ─── フィルター ───
+i_cooldown   = input.int(4,  "Cooldown Bars (同一戦略間)",  minval=1,  group="Filters",
+                 tooltip="同じ方向の連続シグナルを防止（4=M15で1時間）")
+i_min_atr_ratio = input.float(0.8, "Min ATR Ratio", minval=0.1, group="Filters",
+                 tooltip="ATR / ATR20平均 がこの値未満なら全シグナル抑制")
+i_session_filter = input.bool(true, "Session Filter (London+NY)", group="Filters",
+                 tooltip="ロンドン〜NY時間のみシグナル発火")
+i_london_start   = input.int(9,  "Session Start (XMT hour)", minval=0, maxval=23, group="Filters")
+i_session_end    = input.int(22, "Session End (XMT hour)",   minval=0, maxval=23, group="Filters")
+
+// ─── 表示設定 ───
+i_show_emas     = input.bool(true,  "Show EMAs",           group="Display")
+i_show_signals  = input.bool(true,  "Show Signal Labels",  group="Display")
+i_show_bb       = input.bool(false, "Show Bollinger Bands", group="Display")
+i_show_donchian = input.bool(false, "Show Donchian Channel", group="Display")
+
+// ─── 戦略ON/OFF ───
+i_use_ema_cross    = input.bool(true, "Strategy: EMA Cross",       group="Strategies")
+i_use_pullback     = input.bool(true, "Strategy: Trend Pullback",  group="Strategies")
+i_use_breakout     = input.bool(true, "Strategy: Breakout",        group="Strategies")
+i_use_divergence   = input.bool(true, "Strategy: RSI Divergence",  group="Strategies")
+i_use_mean_rev     = input.bool(true, "Strategy: Mean Reversion",  group="Strategies")
+
+
+// ═══════════════════════════════════════════════════════════════════
+// CORE CALCULATIONS
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── EMA ───
+ema_fast = ta.ema(close, i_ema_fast)
+ema_mid  = ta.ema(close, i_ema_mid)
+ema_slow = ta.ema(close, i_ema_slow)
+
+// ─── RSI ───
+rsi_val = ta.rsi(close, i_rsi_len)
+
+// ─── ATR ───
+atr_val    = ta.atr(i_atr_len)
+atr_sma20  = ta.sma(atr_val, 20)
+atr_ratio  = atr_sma20 > 0 ? atr_val / atr_sma20 : 1.0
+
+// ─── Bollinger Bands ───
+bb_basis = ta.sma(close, i_bb_len)
+bb_dev   = i_bb_mult * ta.stdev(close, i_bb_len)
+bb_upper = bb_basis + bb_dev
+bb_lower = bb_basis - bb_dev
+
+// ─── MACD ───
+[macd_line, macd_signal, macd_hist] = ta.macd(close, 12, 26, 9)
+
+// ─── Volume ───
+vol_sma    = ta.sma(volume, 20)
+vol_ratio  = vol_sma > 0 ? volume / vol_sma : 1.0
+
+// ─── Donchian Channel ───
+dc_upper = ta.highest(high, i_breakout_len)
+dc_lower = ta.lowest(low, i_breakout_len)
+
+// ─── Trend State ───
+uptrend       = ema_fast > ema_mid and ema_mid > ema_slow
+downtrend     = ema_fast < ema_mid and ema_mid < ema_slow
+strong_uptrend   = uptrend   and (ema_fast - ema_mid) > atr_val * 0.3
+strong_downtrend = downtrend and (ema_mid - ema_fast) > atr_val * 0.3
+
+// ─── Session Filter (XMT = Europe/Athens) ───
+xmt_hour = hour(time, "Europe/Athens")
+in_session = not i_session_filter or (xmt_hour >= i_london_start and xmt_hour < i_session_end)
+
+// ─── ATR Filter ───
+atr_ok = atr_ratio >= i_min_atr_ratio
+
+// ─── Enough Data Check (EMA200に十分なバー数があるか) ───
+has_enough_data = bar_index > i_ema_slow + 10
+
+// ─── Cooldown Tracker ───
+var int last_signal_bar = 0
+can_signal = bar_index - last_signal_bar >= i_cooldown
+
+// ─── Global Filter ───
+global_filter = in_session and atr_ok and has_enough_data and can_signal
+
+
+// ═══════════════════════════════════════════════════════════════════
+// STRATEGY 1: EMA CROSS (トレンド開始)
+// ═══════════════════════════════════════════════════════════════════
+// EMA21がEMA50を上抜け + 価格がEMA200の上 → LONG
+// EMA21がEMA50を下抜け + 価格がEMA200の下 → SHORT
+// トレンドの「始まり」を捉える。発生頻度: 週1〜2回
+
+ema_cross_long  = i_use_ema_cross and ta.crossover(ema_fast, ema_mid) and close > ema_slow
+ema_cross_short = i_use_ema_cross and ta.crossunder(ema_fast, ema_mid) and close < ema_slow
+
+
+// ═══════════════════════════════════════════════════════════════════
+// STRATEGY 2: TREND PULLBACK (トレンド継続)
+// ═══════════════════════════════════════════════════════════════════
+// 上昇トレンド中にEMA21へプルバック → 反発確認 → LONG
+// 下降トレンド中にEMA21へプルバック → 反落確認 → SHORT
+// トレンドの「押し目/戻り」を捉える。発生頻度: 週3〜5回
+
+// プルバック検出: 安値がEMA21に到達 + 終値がEMA21の上で引ける
+pullback_long  = i_use_pullback and uptrend  and low <= ema_fast * 1.001 and close > ema_fast and rsi_val > 40 and rsi_val < 65
+pullback_short = i_use_pullback and downtrend and high >= ema_fast * 0.999 and close < ema_fast and rsi_val > 35 and rsi_val < 60
+
+
+// ═══════════════════════════════════════════════════════════════════
+// STRATEGY 3: BREAKOUT (レンジブレイク)
+// ═══════════════════════════════════════════════════════════════════
+// N期間の高値をブレイク + 出来高1.3倍以上 → LONG
+// N期間の安値をブレイク + 出来高1.3倍以上 → SHORT
+// レンジからの「脱出」を捉える。発生頻度: 週1〜3回
+
+breakout_long  = i_use_breakout and close > dc_upper[1] and vol_ratio > i_breakout_vol and not strong_downtrend
+breakout_short = i_use_breakout and close < dc_lower[1] and vol_ratio > i_breakout_vol and not strong_uptrend
+
+
+// ═══════════════════════════════════════════════════════════════════
+// STRATEGY 4: RSI DIVERGENCE (モメンタム乖離)
+// ═══════════════════════════════════════════════════════════════════
+// 価格は安値更新だがRSIは安値を更新しない → 強気ダイバージェンス → LONG
+// 価格は高値更新だがRSIは高値を更新しない → 弱気ダイバージェンス → SHORT
+// トレンド「転換」の兆候を捉える。発生頻度: 週1〜2回
+// 注意: ピボット確認のため i_pivot_len バーの遅延あり
+
+// --- ピボットポイント検出 ---
+pl = ta.pivotlow(low,  i_pivot_len, i_pivot_len)
+ph = ta.pivothigh(high, i_pivot_len, i_pivot_len)
+
+// --- 直近2つのピボットロー/ハイの値を取得 ---
+// ピボットが検出された時点のprice/RSI値を保存
+prev_pl_price = ta.valuewhen(not na(pl), low[i_pivot_len],     1)
+prev_pl_rsi   = ta.valuewhen(not na(pl), rsi_val[i_pivot_len], 1)
+curr_pl_price = ta.valuewhen(not na(pl), low[i_pivot_len],     0)
+curr_pl_rsi   = ta.valuewhen(not na(pl), rsi_val[i_pivot_len], 0)
+
+prev_ph_price = ta.valuewhen(not na(ph), high[i_pivot_len],    1)
+prev_ph_rsi   = ta.valuewhen(not na(ph), rsi_val[i_pivot_len], 1)
+curr_ph_price = ta.valuewhen(not na(ph), high[i_pivot_len],    0)
+curr_ph_rsi   = ta.valuewhen(not na(ph), rsi_val[i_pivot_len], 0)
+
+// --- ダイバージェンス条件 ---
+// 強気: 価格がより低い安値 + RSIがより高い安値 + RSIが45未満（売られ気味）
+bull_divergence = i_use_divergence and not na(pl) and
+                  curr_pl_price < prev_pl_price and
+                  curr_pl_rsi   > prev_pl_rsi and
+                  curr_pl_rsi   < 45 and
+                  not na(prev_pl_price)
+
+// 弱気: 価格がより高い高値 + RSIがより低い高値 + RSIが55超（買われ気味）
+bear_divergence = i_use_divergence and not na(ph) and
+                  curr_ph_price > prev_ph_price and
+                  curr_ph_rsi   < prev_ph_rsi and
+                  curr_ph_rsi   > 55 and
+                  not na(prev_ph_price)
+
+
+// ═══════════════════════════════════════════════════════════════════
+// STRATEGY 5: MEAN REVERSION (過延伸反転)
+// ═══════════════════════════════════════════════════════════════════
+// BB下限到達 + RSI売られすぎ + 強い下降トレンドでない → LONG
+// BB上限到達 + RSI買われすぎ + 強い上昇トレンドでない → SHORT
+// 行き過ぎた動きの「反転」を捉える。発生頻度: 週2〜4回
+
+mr_long  = i_use_mean_rev and close <= bb_lower and rsi_val < i_rsi_os and not strong_downtrend
+mr_short = i_use_mean_rev and close >= bb_upper and rsi_val > i_rsi_ob and not strong_uptrend
+
+
+// ═══════════════════════════════════════════════════════════════════
+// SIGNAL SELECTION (優先度ベース・1バー1シグナル)
+// ═══════════════════════════════════════════════════════════════════
+//
+// 優先度（高→低）:
+//   1. BREAKOUT       - レア・高確信度
+//   2. EMA_CROSS      - トレンド開始
+//   3. RSI_DIVERGENCE - 転換シグナル
+//   4. TREND_PULLBACK - トレンド継続
+//   5. MEAN_REVERSION - 逆張り
+
+var string signal_direction = ""
+var string signal_pattern   = ""
+signal_direction := ""
+signal_pattern   := ""
+
+if global_filter
+    // ─── LONG シグナル（優先度順）───
+    if breakout_long
+        signal_direction := "LONG"
+        signal_pattern   := "BREAKOUT"
+    else if ema_cross_long
+        signal_direction := "LONG"
+        signal_pattern   := "EMA_CROSS"
+    else if bull_divergence
+        signal_direction := "LONG"
+        signal_pattern   := "RSI_DIVERGENCE"
+    else if pullback_long
+        signal_direction := "LONG"
+        signal_pattern   := "TREND_PULLBACK"
+    else if mr_long
+        signal_direction := "LONG"
+        signal_pattern   := "MEAN_REVERSION"
+    // ─── SHORT シグナル（優先度順）───
+    else if breakout_short
+        signal_direction := "SHORT"
+        signal_pattern   := "BREAKOUT"
+    else if ema_cross_short
+        signal_direction := "SHORT"
+        signal_pattern   := "EMA_CROSS"
+    else if bear_divergence
+        signal_direction := "SHORT"
+        signal_pattern   := "RSI_DIVERGENCE"
+    else if pullback_short
+        signal_direction := "SHORT"
+        signal_pattern   := "TREND_PULLBACK"
+    else if mr_short
+        signal_direction := "SHORT"
+        signal_pattern   := "MEAN_REVERSION"
+
+has_signal = signal_direction != ""
+
+
+// ═══════════════════════════════════════════════════════════════════
+// H1 TREND CONTEXT (AIへの追加コンテキスト)
+// ═══════════════════════════════════════════════════════════════════
+// M15チャート上でH1レベルのトレンドを簡易判定
+
+h1_ema21 = ta.ema(close, i_ema_fast * 4)   // M15×4 ≈ H1
+h1_ema50 = ta.ema(close, i_ema_mid  * 4)
+h1_trend_str = h1_ema21 > h1_ema50 ? "BULLISH" : "BEARISH"
+
+
+// ═══════════════════════════════════════════════════════════════════
+// WEBHOOK JSON CONSTRUCTION & ALERT
+// ═══════════════════════════════════════════════════════════════════
+
+if has_signal
+    // Cooldown更新
+    last_signal_bar := bar_index
+
+    // JSON構築
+    // 注意: str.tostring() で安全に数値→文字列変換
+    json = '{' +
+         '"secret":"'    + i_secret                                + '",' +
+         '"symbol":"'    + syminfo.ticker                          + '",' +
+         '"direction":"' + signal_direction                        + '",' +
+         '"timeframe":"' + timeframe.period                        + '",' +
+         '"h1_trend":"'  + h1_trend_str                            + '",' +
+         '"pattern":"'   + signal_pattern                          + '",' +
+         '"price":'      + str.tostring(close)                     + ','  +
+         '"ema21":'      + str.tostring(math.round(ema_fast * 100000) / 100000) + ','  +
+         '"ema50":'      + str.tostring(math.round(ema_mid  * 100000) / 100000) + ','  +
+         '"ema200":'     + str.tostring(math.round(ema_slow * 100000) / 100000) + ','  +
+         '"rsi":'        + str.tostring(math.round(rsi_val * 100) / 100)        + ','  +
+         '"atr":'        + str.tostring(atr_val)                   + ','  +
+         '"atr_ratio":'  + str.tostring(math.round(atr_ratio * 100) / 100)      + ','  +
+         '"macd":'       + str.tostring(math.round(macd_line * 100000) / 100000) + ',' +
+         '"macd_signal":' + str.tostring(math.round(macd_signal * 100000) / 100000) + ',' +
+         '"macd_hist":'  + str.tostring(math.round(macd_hist * 100000) / 100000)  + ',' +
+         '"bb_upper":'   + str.tostring(math.round(bb_upper * 100000) / 100000)   + ',' +
+         '"bb_lower":'   + str.tostring(math.round(bb_lower * 100000) / 100000)   + ',' +
+         '"volume_ratio":' + str.tostring(math.round(vol_ratio * 100) / 100)      + ',' +
+         '"dc_upper":'   + str.tostring(dc_upper)                  + ','  +
+         '"dc_lower":'   + str.tostring(dc_lower)                  + ','  +
+         '"broker_time":"' + str.tostring(timenow)                 + '",' +
+         '"source":"custom_multistrat"' +
+         '}'
+
+    alert(json, alert.freq_once_per_bar_close)
+
+
+// ═══════════════════════════════════════════════════════════════════
+// VISUAL PLOTS
+// ═══════════════════════════════════════════════════════════════════
+
+// ─── EMA Lines ───
+plot(i_show_emas ? ema_fast : na, "EMA21",  color=color.new(color.blue, 0),   linewidth=1)
+plot(i_show_emas ? ema_mid  : na, "EMA50",  color=color.new(color.orange, 0), linewidth=1)
+plot(i_show_emas ? ema_slow : na, "EMA200", color=color.new(color.red, 20),   linewidth=2)
+
+// ─── Bollinger Bands ───
+plot(i_show_bb ? bb_upper : na, "BB Upper", color=color.new(color.gray, 50))
+plot(i_show_bb ? bb_lower : na, "BB Lower", color=color.new(color.gray, 50))
+
+// ─── Donchian Channel ───
+plot(i_show_donchian ? dc_upper : na, "DC Upper", color=color.new(color.teal, 60), style=plot.style_stepline)
+plot(i_show_donchian ? dc_lower : na, "DC Lower", color=color.new(color.teal, 60), style=plot.style_stepline)
+
+// ─── Signal Labels ───
+if has_signal and i_show_signals
+    label_color = signal_direction == "LONG" ? color.green : color.red
+    label_style = signal_direction == "LONG" ? label.style_label_up : label.style_label_down
+    label_y     = signal_direction == "LONG" ? low - atr_val * 0.5 : high + atr_val * 0.5
+    label.new(bar_index, label_y,
+         signal_pattern + "\n" + signal_direction,
+         color=label_color, textcolor=color.white, style=label_style, size=size.small)
+
+// ─── Background: Active Session ───
+bgcolor(in_session ? na : color.new(color.gray, 95), title="Off-Session")
+
+// ─── Info Table ───
+var table info_table = table.new(position.top_right, 2, 7, bgcolor=color.new(color.black, 80))
+if barstate.islast
+    table.cell(info_table, 0, 0, "Trend",     text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 0, uptrend ? "▲ UP" : downtrend ? "▼ DOWN" : "◆ RANGE",
+         text_color=uptrend ? color.green : downtrend ? color.red : color.yellow, text_size=size.small)
+    table.cell(info_table, 0, 1, "RSI",        text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 1, str.tostring(math.round(rsi_val * 10) / 10),
+         text_color=rsi_val > 70 ? color.red : rsi_val < 30 ? color.green : color.white, text_size=size.small)
+    table.cell(info_table, 0, 2, "ATR Ratio",  text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 2, str.tostring(math.round(atr_ratio * 100) / 100),
+         text_color=atr_ratio > 1.2 ? color.yellow : color.white, text_size=size.small)
+    table.cell(info_table, 0, 3, "Vol Ratio",  text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 3, str.tostring(math.round(vol_ratio * 100) / 100),
+         text_color=vol_ratio > 1.5 ? color.yellow : color.white, text_size=size.small)
+    table.cell(info_table, 0, 4, "H1 Trend",   text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 4, h1_trend_str,
+         text_color=h1_trend_str == "BULLISH" ? color.green : color.red, text_size=size.small)
+    table.cell(info_table, 0, 5, "Session",    text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 5, in_session ? "ACTIVE" : "OFF",
+         text_color=in_session ? color.green : color.gray, text_size=size.small)
+    table.cell(info_table, 0, 6, "MACD",       text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 6, macd_hist > 0 ? "▲ " + str.tostring(math.round(macd_hist * 100000) / 100000) : "▼ " + str.tostring(math.round(macd_hist * 100000) / 100000),
+         text_color=macd_hist > 0 ? color.green : color.red, text_size=size.small)
