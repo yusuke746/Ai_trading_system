@@ -47,27 +47,30 @@ def verify_webhook(payload: dict) -> bool:
 
 # ──────────── 重複排除 ────────────
 
-def is_duplicate(payload: dict) -> bool:
-    """同一シグナルの重複を5分間排除"""
-    global _recent_signals
-
-    key = hashlib.md5(
+def _dedup_key(payload: dict) -> str:
+    return hashlib.md5(
         f"{payload.get('symbol', '')}:{payload.get('direction', '')}:{payload.get('price', '')}".encode()
     ).hexdigest()
 
+
+def is_duplicate(payload: dict) -> bool:
+    """同一シグナルの重複を5分間排除（チェックのみ、登録しない）"""
+    key = _dedup_key(payload)
     now = datetime.now(timezone.utc)
+    return key in _recent_signals and (now - _recent_signals[key]).total_seconds() < DEDUP_WINDOW_SEC
 
-    if key in _recent_signals and (now - _recent_signals[key]).total_seconds() < DEDUP_WINDOW_SEC:
-        return True
 
+def register_dedup(payload: dict) -> None:
+    """処理確定後にデdup登録する"""
+    global _recent_signals
+    key = _dedup_key(payload)
+    now = datetime.now(timezone.utc)
     _recent_signals[key] = now
-
     # 古いキーをクリーンアップ
     _recent_signals = {
         k: v for k, v in _recent_signals.items()
         if (now - v).total_seconds() < DEDUP_WINDOW_SEC
     }
-    return False
 
 
 # ──────────── データ補完 ────────────
@@ -217,6 +220,9 @@ async def receive_webhook(request: Request):
     except Exception as e:
         logger.error(f"ペイロード変換エラー: {e}")
         raise HTTPException(status_code=422, detail=str(e))
+
+    # 変換成功後にdedup登録（処理失敗時にリトライが通るよう、成功確定後に登録）
+    register_dedup(data)
 
     logger.info(
         f"Webhook受信: {payload.symbol} {payload.direction} "

@@ -261,10 +261,10 @@ class TestWebhookReceiver:
         assert is_duplicate(data) is False
 
     def test_is_duplicate_second_time(self):
-        from ingestion.webhook_receiver import is_duplicate, _recent_signals
+        from ingestion.webhook_receiver import is_duplicate, register_dedup, _recent_signals
         _recent_signals.clear()
         data = {"symbol": "USDJPY", "direction": "LONG", "price": 150.0}
-        is_duplicate(data)  # 1回目
+        register_dedup(data)  # 1回目登録
         assert is_duplicate(data) is True  # 2回目は重複
 
 
