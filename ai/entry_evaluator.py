@@ -61,12 +61,12 @@ class EntryEvaluator:
 
     # ──────────── メインエントリーポイント ────────────
 
-    async def evaluate(self, payload: WebhookPayload):
+    async def evaluate(self, payload: WebhookPayload, all_patterns: list[str] | None = None):
         """Webhookペイロードからエントリー評価を実行"""
         async with self._eval_lock:
-            await self._evaluate_inner(payload)
+            await self._evaluate_inner(payload, all_patterns)
 
-    async def _evaluate_inner(self, payload: WebhookPayload):
+    async def _evaluate_inner(self, payload: WebhookPayload, all_patterns: list[str] | None = None):
         """エントリー評価の実処理（Lock内で実行）"""
         symbol = payload.symbol
         direction = payload.direction
@@ -125,6 +125,7 @@ class EntryEvaluator:
             pos_count=len(positions),
             correlation_alert=correlation_alert,
             todays_events=todays_events,
+            all_patterns=all_patterns,
         )
 
         # 5. AI呼び出し（3段フォールバック）

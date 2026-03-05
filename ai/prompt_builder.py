@@ -89,13 +89,14 @@ class PromptBuilder:
         pos_count: int,
         correlation_alert: dict,
         todays_events: list[dict],
+        all_patterns: list[str] | None = None,
     ) -> list[dict]:
         """エントリー評価プロンプトを構築"""
         # テクニカルデータ整形
         tech_data = {
             "symbol": webhook_data.get("symbol"),
             "direction": webhook_data.get("direction"),
-            "strategy": webhook_data.get("strategy"),
+            "pattern": webhook_data.get("pattern"),
             "source": webhook_data.get("source"),
             "price": webhook_data.get("price"),
             "rsi": webhook_data.get("rsi"),
@@ -125,6 +126,15 @@ class PromptBuilder:
                 f"(推奨risk_multiplier: {correlation_alert['recommended_risk_multiplier']})"
             )
 
+        # シグナル集約情報
+        signal_confluence_text = ""
+        if all_patterns and len(all_patterns) > 1:
+            signal_confluence_text = (
+                f"\n🔔 シグナル集約: {len(all_patterns)}戦略が同時発火 → "
+                f"patterns={all_patterns}\n"
+                f"複数戦略の一致は信頼度向上要因として考慮してください。"
+            )
+
         user_content = (
             f"テクニカルシグナル: {json.dumps(tech_data, ensure_ascii=False)}\n"
             f"現在値: {webhook_data.get('price')}\n"
@@ -134,6 +144,7 @@ class PromptBuilder:
             f"口座状況: 総エクスポージャー {exposure_pct:.1f}% / 保有ポジ {pos_count}件\n"
             f"相関アラート: {correlation_text}\n"
             f"今日の重要指標:\n{events_text}"
+            f"{signal_confluence_text}"
         )
 
         return [

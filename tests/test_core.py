@@ -288,6 +288,23 @@ class TestPromptBuilder:
         assert messages[1]["role"] == "user"
         assert "USDJPY" in messages[1]["content"]
 
+    def test_build_entry_prompt_with_confluence(self):
+        from ai.prompt_builder import PromptBuilder
+        pb = PromptBuilder()
+        messages = pb.build_entry_prompt(
+            webhook_data={"symbol": "GOLD", "direction": "SHORT", "price": 2000.0},
+            session="LONDON",
+            h1_trend="BEARISH",
+            exposure_pct=0.0,
+            pos_count=0,
+            correlation_alert={"has_alert": False},
+            todays_events=[],
+            all_patterns=["BREAKOUT", "FVG_FILL", "LORENTZIAN"],
+        )
+        assert "3戦略が同時発火" in messages[1]["content"]
+        assert "BREAKOUT" in messages[1]["content"]
+        assert "FVG_FILL" in messages[1]["content"]
+
     def test_build_h1_batch_prompt(self):
         from ai.prompt_builder import PromptBuilder
         pb = PromptBuilder()

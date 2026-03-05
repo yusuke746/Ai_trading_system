@@ -2,7 +2,7 @@
 ingestion/webhook_receiver.py — TradingView Webhook受信
 
 FastAPIエンドポイント: POST /webhook
-認証 + バリデーション + 重複排除 + データ補完 + 非同期パイプライン
+認証 + バリデーション + 重複排除 + シグナル集約バッファ + データ補完 + 非同期パイプライン
 """
 
 import asyncio
@@ -26,6 +26,11 @@ router = APIRouter()
 # 重複排除キャッシュ
 _recent_signals: dict[str, datetime] = {}
 DEDUP_WINDOW_SEC: int = 300  # 5分
+
+# シグナル集約バッファ: 同一 symbol+direction を短時間で束ねる
+SIGNAL_BUFFER_SEC: float = 3.0  # 3秒間バッファ
+_signal_buffer: dict[str, list[WebhookPayload]] = {}
+_buffer_tasks: dict[str, asyncio.Task] = {}
 
 # コンポーネント参照（main.pyからset_dependenciesで注入）
 _entry_evaluator = None
@@ -210,7 +215,7 @@ async def receive_webhook(request: Request):
         logger.warning(f"Webhookバリデーション失敗: {reason}")
         raise HTTPException(status_code=422, detail=reason)
 
-    # 重複排除
+    # 重複排除（5分間の同一symbol+direction）
     if is_duplicate(data):
         logger.info(f"重複シグナル排除: {data.get('symbol')} {data.get('direction')}")
         return {"status": "duplicate", "message": "シグナルは既に処理中"}
@@ -222,37 +227,75 @@ async def receive_webhook(request: Request):
         logger.error(f"ペイロード変換エラー: {e}")
         raise HTTPException(status_code=422, detail=str(e))
 
-    # 変換成功後にdedup登録（処理失敗時にリトライが通るよう、成功確定後に登録）
-    register_dedup(data)
-
     logger.info(
         f"Webhook受信: {payload.symbol} {payload.direction} "
         f"price={payload.price} pattern={payload.pattern} source={payload.source}"
     )
 
-    # 非同期でエントリー評価パイプラインを起動
-    asyncio.create_task(_process_signal(payload))
+    # シグナルバッファに追加（3秒間同一symbol+directionを集約）
+    buffer_key = f"{payload.symbol}:{payload.direction}"
+
+    if buffer_key not in _signal_buffer:
+        # 初回: バッファ作成 + 3秒後に処理するタスク起動
+        _signal_buffer[buffer_key] = [payload]
+        _buffer_tasks[buffer_key] = asyncio.create_task(
+            _flush_buffer(buffer_key)
+        )
+        logger.info(f"バッファ開始: {buffer_key} (3秒後に処理)")
+    else:
+        # 追加: 既にバッファ中 → 追加のみ
+        _signal_buffer[buffer_key].append(payload)
+        logger.info(
+            f"バッファ追加: {buffer_key} pattern={payload.pattern} "
+            f"(現在{len(_signal_buffer[buffer_key])}件)"
+        )
 
     return {"status": "received", "message": f"シグナル受信: {payload.symbol} {payload.direction}"}
 
 
-async def _process_signal(payload: WebhookPayload):
-    """バックグラウンドでシグナル処理（Webhook即200 OK後に実行）"""
+async def _flush_buffer(buffer_key: str):
+    """バッファ時間経過後、集約されたシグナルを1回のAI評価に流す"""
+    await asyncio.sleep(SIGNAL_BUFFER_SEC)
+
+    payloads = _signal_buffer.pop(buffer_key, [])
+    _buffer_tasks.pop(buffer_key, None)
+
+    if not payloads:
+        return
+
+    # dedup登録（最初のペイロードのデータで登録）
+    first = payloads[0]
+    register_dedup({"symbol": first.symbol, "direction": first.direction})
+
+    # 全パターンを集約
+    patterns = [p.pattern for p in payloads]
+    sources = list(set(p.source for p in payloads))
+
+    logger.info(
+        f"バッファフラッシュ: {buffer_key} | "
+        f"{len(payloads)}件集約 | patterns={patterns} | sources={sources}"
+    )
+
+    # ベストなペイロードを選定（カスタムインジケータ優先、なければ最初のもの）
+    best_payload = next(
+        (p for p in payloads if p.source == "custom_multistrat"), payloads[0]
+    )
+
     try:
         # データ補完（外部インジケータの場合）
-        payload = await supplement_technical_data(payload)
+        best_payload = await supplement_technical_data(best_payload)
 
-        # エントリー評価
+        # エントリー評価（集約パターン情報付き）
         if _entry_evaluator:
-            await _entry_evaluator.evaluate(payload)
+            await _entry_evaluator.evaluate(best_payload, all_patterns=patterns)
         else:
             logger.error("entry_evaluatorが未設定")
 
     except Exception as e:
-        logger.exception(f"シグナル処理エラー: {payload.symbol} - {e}")
+        logger.exception(f"シグナル処理エラー: {buffer_key} - {e}")
         if _notifier:
             await _notifier.send(
-                f"🔴 シグナル処理エラー: {payload.symbol}\n{type(e).__name__}: {e}",
+                f"🔴 シグナル処理エラー: {buffer_key}\n{type(e).__name__}: {e}",
                 level="CRITICAL",
             )
 
