@@ -327,7 +327,8 @@ async def graceful_shutdown():
     """グレースフルシャットダウン"""
     logger.info("シャットダウン開始...")
 
-    scheduler.shutdown(wait=False)
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
     await notifier.send("🔴 システムシャットダウン", level="CRITICAL")
     await calendar.close()
     await notifier.close()
