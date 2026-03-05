@@ -323,7 +323,7 @@ if has_signal
          '"volume_ratio":' + str.tostring(math.round(vol_ratio * 100) / 100)      + ',' +
          '"dc_upper":'   + str.tostring(dc_upper)                  + ','  +
          '"dc_lower":'   + str.tostring(dc_lower)                  + ','  +
-         '"broker_time":"' + str.tostring(timenow)                 + '",' +
+         '"broker_time":"' + str.format_time(timenow, "yyyy-MM-dd'T'HH:mm:ss", "UTC") + 'Z",' +
          '"source":"custom_multistrat"' +
          '}'
 
