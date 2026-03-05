@@ -48,8 +48,9 @@ def verify_webhook(payload: dict) -> bool:
 # ──────────── 重複排除 ────────────
 
 def _dedup_key(payload: dict) -> str:
+    # priceは除外 — 同一銘柄・同一方向は価格差があっても5分間で1回のみ処理
     return hashlib.md5(
-        f"{payload.get('symbol', '')}:{payload.get('direction', '')}:{payload.get('price', '')}".encode()
+        f"{payload.get('symbol', '')}:{payload.get('direction', '')}".encode()
     ).hexdigest()
 
 
