@@ -1,7 +1,7 @@
 """
 ingestion/webhook_receiver.py — TradingView Webhook受信
 
-FastAPIエンドポイント: POST /webhook/tradingview
+FastAPIエンドポイント: POST /webhook
 認証 + バリデーション + 重複排除 + データ補完 + 非同期パイプライン
 """
 
@@ -186,7 +186,7 @@ def validate_payload(data: dict) -> tuple[bool, str]:
 
 # ──────────── エンドポイント ────────────
 
-@router.post("/webhook/tradingview")
+@router.post("/webhook")
 async def receive_webhook(request: Request):
     """TradingView Webhook受信エンドポイント"""
     try:
