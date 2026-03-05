@@ -45,6 +45,7 @@ class EntryEvaluator:
         self._scheduler = None
         self._prompt_builder = PromptBuilder()
         self._lot_calculator = None
+        self._eval_lock = asyncio.Lock()  # 同時エントリー評価を直列化
 
     def set_dependencies(
         self, mt5_client, thesis_db, notifier, guardian, calendar, scheduler, lot_calculator
@@ -62,6 +63,11 @@ class EntryEvaluator:
 
     async def evaluate(self, payload: WebhookPayload):
         """Webhookペイロードからエントリー評価を実行"""
+        async with self._eval_lock:
+            await self._evaluate_inner(payload)
+
+    async def _evaluate_inner(self, payload: WebhookPayload):
+        """エントリー評価の実処理（Lock内で実行）"""
         symbol = payload.symbol
         direction = payload.direction
 
