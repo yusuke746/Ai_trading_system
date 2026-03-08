@@ -37,17 +37,18 @@ class TradingConfig:
 
     # OpenAI
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-    MODEL_MAIN: str = "gpt-4o"         # エントリー評価・H1監視用
-    MODEL_FAST: str = "gpt-4o-mini"    # 緊急判定・WAIT再チェック用
+    MODEL_MAIN: str = "gpt-4.1"         # エントリー評価・H1監視用
+    MODEL_FAST: str = "gpt-4.1-mini"    # 緊急判定・WAIT再チェック用
 
     # モデル料金テーブル (USD / 1M tokens)
-    # GPT-5世代移行時はここだけ更新すればOK
+    # モデル変更時はここだけ更新すればOK
     MODEL_PRICING: dict = field(default_factory=lambda: {
+        "gpt-4.1": {"input": 2.0, "cached_input": 0.50, "output": 8.0},
+        "gpt-4.1-mini": {"input": 0.40, "cached_input": 0.10, "output": 1.6},
+        "gpt-4.1-nano": {"input": 0.10, "cached_input": 0.025, "output": 0.4},
+        # 旧モデル（フォールバック用に残す）
         "gpt-4o": {"input": 2.5, "cached_input": 1.25, "output": 10.0},
         "gpt-4o-mini": {"input": 0.15, "cached_input": 0.075, "output": 0.6},
-        # GPT-5世代（料金確定後に有効化）
-        # "gpt-5": {"input": 2.0, "cached_input": 0.125, "output": 8.0},
-        # "gpt-5-mini": {"input": 0.3, "cached_input": 0.015, "output": 1.2},
     })
 
     # Discord

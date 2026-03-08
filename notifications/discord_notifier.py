@@ -241,7 +241,7 @@ class DiscordNotifier:
         msg = (
             f"📊 {symbol} {direction}  |  {lot}lot\n"
             f"🎯 TP: {tp}  |  🛡 SL: {sl}\n"
-            f"🤖 GPT-4o  信頼度: {confidence * 100:.0f}%  |  {market_regime}\n"
+            f"🤖 AI判定  信頼度: {confidence * 100:.0f}%  |  {market_regime}\n"
             f"📝 Thesis: {thesis}\n"
             f"⚠️ 無効化条件:\n{inv_text}\n"
             f"📏 Spread: {spread:.1f}pts  |  Slippage: {slippage:.1f}pts\n"

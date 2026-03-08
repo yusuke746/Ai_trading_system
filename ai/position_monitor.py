@@ -2,7 +2,7 @@
 ai/position_monitor.py — ポジション監視エンジン
 
 H1バッチ処理（毎時01分）・価格近接チェック（60秒ごと）・週末決済。
-フォールバック: GPT-4o → GPT-4o-mini → ルールベース。
+フォールバック: GPT-4.1 → GPT-4.1-mini → ルールベース。
 """
 
 import asyncio
@@ -336,7 +336,7 @@ class PositionMonitor:
             logger.error(f"価格近接チェックエラー: {e}")
 
     async def _trigger_layer2(self, pos, thesis: dict, trigger_reason: str):
-        """Layer 2: 緊急AI判定（GPT-4o-mini）"""
+        """Layer 2: 緊急AI判定（GPT-4.1-mini）"""
         try:
             trade_id = thesis.get("trade_id", "N/A")
             point = 0.001 if "JPY" in pos.symbol else 0.00001
@@ -423,7 +423,7 @@ class PositionMonitor:
 
     async def _call_h1_ai(self, messages: list[dict]) -> Optional[dict]:
         """H1バッチAI呼び出し（フォールバック付き）"""
-        # 試行1: GPT-4o
+        # 試行1: GPT-4.1
         try:
             response = await asyncio.wait_for(
                 self._call_ai(CONFIG.MODEL_MAIN, messages),
@@ -435,11 +435,11 @@ class PositionMonitor:
                     result["_model_used"] = CONFIG.MODEL_MAIN
                     return result
         except asyncio.TimeoutError:
-            logger.warning("H1バッチ: GPT-4oタイムアウト")
+            logger.warning("H1バッチ: GPT-4.1タイムアウト")
         except Exception as e:
-            logger.warning(f"H1バッチ: GPT-4oエラー: {e}")
+            logger.warning(f"H1バッチ: GPT-4.1エラー: {e}")
 
-        # 試行2: GPT-4o-mini
+        # 試行2: GPT-4.1-mini
         try:
             response = await asyncio.wait_for(
                 self._call_ai(CONFIG.MODEL_FAST, messages),
@@ -451,7 +451,7 @@ class PositionMonitor:
                     result["_model_used"] = CONFIG.MODEL_FAST
                     return result
         except Exception as e:
-            logger.warning(f"H1バッチ: GPT-4o-miniもエラー: {e}")
+            logger.warning(f"H1バッチ: GPT-4.1-miniもエラー: {e}")
 
         # 試行3: ルールベースフォールバック
         logger.warning("H1バッチ: AI全障害 → ルールベースで全ポジHOLD")
@@ -463,7 +463,7 @@ class PositionMonitor:
         return None
 
     async def _call_fast_ai(self, messages: list[dict]) -> Optional[dict]:
-        """緊急判定AI（GPT-4o-mini）"""
+        """緊急判定AI（GPT-4.1-mini）"""
         try:
             response = await asyncio.wait_for(
                 self._call_ai(CONFIG.MODEL_FAST, messages),

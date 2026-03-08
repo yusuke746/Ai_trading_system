@@ -137,7 +137,7 @@ class OrderResult(BaseModel):
 # ═══════════════════════════════════════════════════════════════
 
 class AIEntryResponse(BaseModel):
-    """GPT-4oのエントリー評価JSON出力"""
+    """AIのエントリー評価JSON出力"""
     decision: Decision
     confidence: float = Field(ge=0.0, le=1.0)
     thesis: str
@@ -174,7 +174,7 @@ class AIPositionInstruction(BaseModel):
 
 
 class AIH1BatchResponse(BaseModel):
-    """H1バッチ監視のGPT-4o出力"""
+    """H1バッチ監視のAI出力"""
     positions: list[AIPositionInstruction]
 
 
@@ -183,7 +183,7 @@ class AIH1BatchResponse(BaseModel):
 # ═══════════════════════════════════════════════════════════════
 
 class AIEmergencyResponse(BaseModel):
-    """GPT-4o-miniの緊急判定出力"""
+    """緊急判定のAI出力"""
     action: str  # ALERT_HUMAN / CONTINUE_MONITORING
     reason: str
 
