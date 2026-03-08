@@ -116,6 +116,9 @@ class EntryEvaluator:
         h1_trend = payload.h1_trend or "UNKNOWN"
         todays_events = await self._calendar.get_todays_events()
 
+        # H4・日足のマルチタイムフレームデータ取得
+        mtf_data = await self._mt5_client.get_mtf_summary(symbol)
+
         webhook_dict = payload.model_dump()
         messages = self._prompt_builder.build_entry_prompt(
             webhook_data=webhook_dict,
@@ -126,6 +129,7 @@ class EntryEvaluator:
             correlation_alert=correlation_alert,
             todays_events=todays_events,
             all_patterns=all_patterns,
+            mtf_data=mtf_data,
         )
 
         # 5. AI呼び出し（3段フォールバック）

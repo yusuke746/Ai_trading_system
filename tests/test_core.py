@@ -306,6 +306,41 @@ class TestPromptBuilder:
         assert "BREAKOUT" in messages[2]["content"]
         assert "FVG_FILL" in messages[2]["content"]
 
+    def test_build_entry_prompt_with_mtf(self):
+        from ai.prompt_builder import PromptBuilder
+        pb = PromptBuilder()
+        mtf_data = {
+            "h4": {
+                "current": {"open": 150.0, "high": 150.5, "low": 149.5, "close": 150.3},
+                "prev_close": 149.8,
+                "trend": "BULLISH",
+                "range_high": 150.5,
+                "range_low": 149.2,
+            },
+            "d1": {
+                "current": {"open": 149.0, "high": 150.5, "low": 148.8, "close": 150.3},
+                "prev_close": 149.0,
+                "trend": "BULLISH",
+                "week_high": 151.0,
+                "week_low": 147.5,
+            },
+        }
+        messages = pb.build_entry_prompt(
+            webhook_data={"symbol": "USDJPY", "direction": "LONG", "price": 150.0},
+            session="LONDON",
+            h1_trend="BULLISH",
+            exposure_pct=0.0,
+            pos_count=0,
+            correlation_alert={"has_alert": False},
+            todays_events=[],
+            mtf_data=mtf_data,
+        )
+        # MTFデータがSemi-Static層（messages[1]）に含まれること
+        assert "H4足コンテキスト" in messages[1]["content"]
+        assert "日足コンテキスト" in messages[1]["content"]
+        assert "BULLISH" in messages[1]["content"]
+        assert "150.5" in messages[1]["content"]
+
     def test_build_h1_batch_prompt(self):
         from ai.prompt_builder import PromptBuilder
         pb = PromptBuilder()

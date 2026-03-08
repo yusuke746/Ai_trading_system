@@ -60,6 +60,15 @@ ENTRY_SYSTEM_PROMPT = """あなたはプロのFXトレーダーの思考を持�
 - RSI: 30以下は売られすぎ反発警戒、70以上は買われすぎ反落警戒
 - ATR ratio: 1.0が平均、1.5以上は高ボラティリティ（SL拡大検討）
 - H1トレンドとエントリー方向の一致は信頼度向上要因
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【マルチタイムフレーム分析（MTF）】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- H4足・日足データが提供される場合は、必ずエントリー方向との整合性を確認
+- 上位足トレンドと同方向のエントリーは信頼度を上げる
+- 上位足トレンドに逆行するエントリーは信頼度を下げるか、REJECTを検討
+- 日足/H4の重要なサポート・レジスタンス付近ではTP/SLを調整
+- 週間レンジの上限/下限付近でのエントリーは反転リスクに注意
 - 複数戦略の同時発火（シグナル集約）は強い信頼度向上要因
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -202,10 +211,11 @@ class PromptBuilder:
         correlation_alert: dict,
         todays_events: list[dict],
         all_patterns: list[str] | None = None,
+        mtf_data: dict | None = None,
     ) -> list[dict]:
         """エントリー評価プロンプトを構築（3層構造）"""
 
-        # ── Layer 2: Semi-Static（経済指標・市場概況）──
+        # ── Layer 2: Semi-Static（経済指標・市場概況・MTF）──
         events_text = "なし"
         if todays_events:
             events_list = [
@@ -214,11 +224,36 @@ class PromptBuilder:
             ]
             events_text = "\n".join(events_list)
 
+        # MTF（マルチタイムフレーム）コンテキスト構築
+        mtf_text = ""
+        if mtf_data:
+            if "h4" in mtf_data:
+                h4 = mtf_data["h4"]
+                cur = h4["current"]
+                mtf_text += (
+                    f"\n\n【H4足コンテキスト（直近24時間）】\n"
+                    f"現在H4足: O={cur['open']} H={cur['high']} L={cur['low']} C={cur['close']}\n"
+                    f"前回H4終値: {h4['prev_close']}\n"
+                    f"H4トレンド: {h4['trend']}\n"
+                    f"24h レンジ: {h4['range_low']} - {h4['range_high']}"
+                )
+            if "d1" in mtf_data:
+                d1 = mtf_data["d1"]
+                cur = d1["current"]
+                mtf_text += (
+                    f"\n\n【日足コンテキスト（直近1週間）】\n"
+                    f"本日: O={cur['open']} H={cur['high']} L={cur['low']} C={cur['close']}\n"
+                    f"前日終値: {d1['prev_close']}\n"
+                    f"日足トレンド: {d1['trend']}\n"
+                    f"週間レンジ: {d1['week_low']} - {d1['week_high']}"
+                )
+
         semi_static_content = (
             f"【本日の重要経済指標】\n{events_text}\n\n"
             f"【市場概況】\n"
             f"セッション(XMT): {session}\n"
             f"H1トレンド: {h1_trend}"
+            f"{mtf_text}"
         )
 
         # ── Layer 3: Dynamic（シグナル・口座状況）──

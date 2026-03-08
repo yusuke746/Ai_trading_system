@@ -429,6 +429,61 @@ class MT5Client:
             df["time"] = pd.to_datetime(df["time"], unit="s")
             return df
 
+    async def get_mtf_summary(self, symbol: str) -> dict:
+        """H4・日足のマルチタイムフレームサマリーを取得
+
+        AIエントリー判断に必要な上位足コンテキストを提供する。
+        取得失敗時は空dictを返す（呼び出し元でエラーにしない）。
+        """
+        result = {}
+        try:
+            # H4: 直近6本（24時間分）
+            h4_df = await self.get_ohlcv(symbol, mt5.TIMEFRAME_H4, 6)
+            if h4_df is not None and len(h4_df) >= 3:
+                latest_h4 = h4_df.iloc[-1]
+                prev_h4 = h4_df.iloc[-2]
+                h4_highs = h4_df["high"].tolist()
+                h4_lows = h4_df["low"].tolist()
+                h4_closes = h4_df["close"].tolist()
+                result["h4"] = {
+                    "current": {
+                        "open": round(float(latest_h4["open"]), 5),
+                        "high": round(float(latest_h4["high"]), 5),
+                        "low": round(float(latest_h4["low"]), 5),
+                        "close": round(float(latest_h4["close"]), 5),
+                    },
+                    "prev_close": round(float(prev_h4["close"]), 5),
+                    "trend": "BULLISH" if h4_closes[-1] > h4_closes[-3] else "BEARISH",
+                    "range_high": round(float(max(h4_highs)), 5),
+                    "range_low": round(float(min(h4_lows)), 5),
+                }
+
+            # D1: 直近5本（1週間分）
+            d1_df = await self.get_ohlcv(symbol, mt5.TIMEFRAME_D1, 5)
+            if d1_df is not None and len(d1_df) >= 3:
+                latest_d1 = d1_df.iloc[-1]
+                prev_d1 = d1_df.iloc[-2]
+                d1_highs = d1_df["high"].tolist()
+                d1_lows = d1_df["low"].tolist()
+                d1_closes = d1_df["close"].tolist()
+                result["d1"] = {
+                    "current": {
+                        "open": round(float(latest_d1["open"]), 5),
+                        "high": round(float(latest_d1["high"]), 5),
+                        "low": round(float(latest_d1["low"]), 5),
+                        "close": round(float(latest_d1["close"]), 5),
+                    },
+                    "prev_close": round(float(prev_d1["close"]), 5),
+                    "trend": "BULLISH" if d1_closes[-1] > d1_closes[-3] else "BEARISH",
+                    "week_high": round(float(max(d1_highs)), 5),
+                    "week_low": round(float(min(d1_lows)), 5),
+                }
+
+        except Exception as e:
+            logger.warning(f"MTFサマリー取得失敗 ({symbol}): {e}")
+
+        return result
+
     # ──────────── ユーティリティ ────────────
 
     def check_spread(self, symbol: str) -> tuple[bool, float]:
