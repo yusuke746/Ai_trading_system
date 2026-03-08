@@ -50,7 +50,7 @@ class TradingConfig:
     SYMBOLS: tuple = ("USDJPY", "EURUSD", "GOLD")
 
     # リスク設定
-    MAX_RISK_PER_TRADE_PCT: float = 1.0
+    MAX_RISK_PER_TRADE_PCT: float = 2.0
     MAX_DAILY_DRAWDOWN_PCT: float = 3.0
     MAX_TOTAL_EXPOSURE_PCT: float = 3.0
     MAX_POSITIONS: int = 3

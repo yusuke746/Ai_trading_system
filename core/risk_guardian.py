@@ -72,8 +72,8 @@ class RiskGuardian:
             # ポジション数チェック
             await self._check_position_count()
 
-            # 通常状態に戻す（上記でMONITOR_ONLYにされなかった場合）
-            if self.status in (SystemStatus.WEEKEND_CLOSED, SystemStatus.FRIDAY_CUTOFF):
+            # 通常状態に戻す（週末/金曜カットオフ/MONITOR_ONLYが解除された場合）
+            if self.status in (SystemStatus.WEEKEND_CLOSED, SystemStatus.FRIDAY_CUTOFF, SystemStatus.MONITOR_ONLY):
                 self.status = SystemStatus.ACTIVE
                 logger.info("ステータス変更: ACTIVE に復帰")
 
@@ -107,6 +107,15 @@ class RiskGuardian:
                     f"🔸 MONITOR_ONLY: ポジション数 {len(positions)} >= {CONFIG.MAX_POSITIONS}",
                     level="WARNING",
                 )
+        else:
+            # ポジション数が上限未満に減った → ACTIVE に復帰
+            if self.status == SystemStatus.MONITOR_ONLY:
+                self.status = SystemStatus.ACTIVE
+                await self._notify(
+                    f"🟢 ACTIVE復帰: ポジション数 {len(positions)} < {CONFIG.MAX_POSITIONS}",
+                    level="INFO",
+                )
+                logger.info(f"ステータス変更: MONITOR_ONLY → ACTIVE (ポジション数 {len(positions)})")
 
     # ──────────── エントリー事前チェック ────────────
 
