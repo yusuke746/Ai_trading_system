@@ -72,8 +72,9 @@ class RiskGuardian:
             # ポジション数チェック
             await self._check_position_count()
 
-            # 通常状態に戻す（週末/金曜カットオフ/MONITOR_ONLYが解除された場合）
-            if self.status in (SystemStatus.WEEKEND_CLOSED, SystemStatus.FRIDAY_CUTOFF, SystemStatus.MONITOR_ONLY):
+            # 週末/金曜カットオフ解除時に ACTIVE に戻す
+            # ※ MONITOR_ONLY の復帰は _check_position_count() 内で処理済み
+            if self.status in (SystemStatus.WEEKEND_CLOSED, SystemStatus.FRIDAY_CUTOFF):
                 self.status = SystemStatus.ACTIVE
                 logger.info("ステータス変更: ACTIVE に復帰")
 
