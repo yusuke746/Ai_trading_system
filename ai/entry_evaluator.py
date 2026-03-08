@@ -2,7 +2,7 @@
 ai/entry_evaluator.py — エントリー評価エンジン
 
 Webhookデータを受け取り、AIでエントリー可否を判断・執行する。
-web_search付きGPT-5 → web_searchなし → GPT-5-mini の3段フォールバック。
+web_search付きGPT-5.2 → web_searchなし → GPT-5-mini の3段フォールバック。
 """
 
 import asyncio

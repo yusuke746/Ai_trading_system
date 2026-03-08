@@ -2,7 +2,7 @@
 ai/position_monitor.py — ポジション監視エンジン
 
 H1バッチ処理（毎時01分）・価格近接チェック（60秒ごと）・週末決済。
-フォールバック: GPT-5 → GPT-5-mini → ルールベース。
+フォールバック: GPT-5.2 → GPT-5-mini → ルールベース。
 """
 
 import asyncio
@@ -435,9 +435,9 @@ class PositionMonitor:
                     result["_model_used"] = CONFIG.MODEL_MAIN
                     return result
         except asyncio.TimeoutError:
-            logger.warning("H1バッチ: GPT-5タイムアウト")
+            logger.warning("H1バッチ: GPT-5.2タイムアウト")
         except Exception as e:
-            logger.warning(f"H1バッチ: GPT-5エラー: {e}")
+            logger.warning(f"H1バッチ: GPT-5.2エラー: {e}")
 
         # 試行2: GPT-5-mini
         try:

@@ -37,12 +37,13 @@ class TradingConfig:
 
     # OpenAI
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-    MODEL_MAIN: str = "gpt-5"           # エントリー評価・H1監視用
+    MODEL_MAIN: str = "gpt-5.2"         # エントリー評価・H1監視用
     MODEL_FAST: str = "gpt-5-mini"      # 緊急判定・WAIT再チェック用
 
     # モデル料金テーブル (USD / 1M tokens)
     # モデル変更時はここだけ更新すればOK
     MODEL_PRICING: dict = field(default_factory=lambda: {
+        "gpt-5.2": {"input": 1.75, "cached_input": 0.175, "output": 14.0},
         "gpt-5": {"input": 1.25, "cached_input": 0.125, "output": 10.0},
         "gpt-5-mini": {"input": 0.25, "cached_input": 0.025, "output": 2.0},
         "gpt-5-nano": {"input": 0.05, "cached_input": 0.005, "output": 0.4},
