@@ -3,6 +3,7 @@ notifications/discord_notifier.py — Discord Webhook通知
 
 全システムイベントをDiscord Embedsで通知。
 通知失敗はシステムを止めない。同一内容の連続通知を30秒で抑制。
+同時刻の通知はバッファリングして一括送信（2秒待機で集約）。
 """
 
 import asyncio
@@ -37,6 +38,9 @@ LEVEL_EMOJI = {
 _recent_notifications: dict[str, datetime] = {}
 DEDUP_WINDOW_SEC: int = 30
 
+# バッチ送信設定
+BATCH_WINDOW_SEC: float = 2.0  # 同時通知の集約待機時間
+
 
 class DiscordNotifier:
     """Discord Webhook通知マネージャー"""
@@ -46,6 +50,10 @@ class DiscordNotifier:
         self._client: Optional[httpx.AsyncClient] = None
         self._db = None  # ThesisDB参照（日次レポート用）
         self._mt5_client = None
+        # バッチ送信用バッファ
+        self._batch_buffer: list[dict] = []  # {"message", "level", "title"}
+        self._batch_task: Optional[asyncio.Task] = None
+        self._batch_lock = asyncio.Lock()
 
     def set_dependencies(self, db=None, mt5_client=None):
         self._db = db
@@ -57,13 +65,17 @@ class DiscordNotifier:
 
     async def close(self):
         """クリーンアップ"""
+        # バッファに残っている通知をフラッシュ
+        async with self._batch_lock:
+            if self._batch_buffer:
+                await self._flush_batch()
         if self._client:
             await self._client.aclose()
 
     # ──────────── コア送信 ────────────
 
     async def send(self, message: str, level: str = "INFO", title: Optional[str] = None):
-        """Discord Embed通知を送信"""
+        """Discord Embed通知を送信（バッチ対応）"""
         if not self.webhook_url:
             logger.warning("Discord Webhook URLが未設定")
             return
@@ -84,6 +96,98 @@ class DiscordNotifier:
         for k in expired:
             del _recent_notifications[k]
 
+        # CRITICAL は即時送信（バッファしない）
+        if level == "CRITICAL":
+            await self._send_immediate(message, level, title)
+            return
+
+        # バッファに追加して遅延送信
+        async with self._batch_lock:
+            self._batch_buffer.append({
+                "message": message,
+                "level": level,
+                "title": title,
+            })
+            # 最初の追加時にフラッシュタスクを起動
+            if self._batch_task is None or self._batch_task.done():
+                self._batch_task = asyncio.create_task(self._schedule_flush())
+
+    async def _schedule_flush(self):
+        """BATCH_WINDOW_SEC 待機後にバッファをフラッシュ"""
+        await asyncio.sleep(BATCH_WINDOW_SEC)
+        async with self._batch_lock:
+            if self._batch_buffer:
+                await self._flush_batch()
+
+    async def _flush_batch(self):
+        """バッファ内の通知をまとめて送信"""
+        items = self._batch_buffer.copy()
+        self._batch_buffer.clear()
+
+        if not items:
+            return
+
+        # 1件のみ → そのまま送信
+        if len(items) == 1:
+            item = items[0]
+            await self._send_immediate(item["message"], item["level"], item["title"])
+            return
+
+        # 複数件 → 同一レベル・同一理由のものをグループ化
+        groups = self._group_notifications(items)
+
+        for group in groups:
+            if len(group) == 1:
+                item = group[0]
+                await self._send_immediate(item["message"], item["level"], item["title"])
+            else:
+                await self._send_grouped(group)
+
+    def _group_notifications(self, items: list[dict]) -> list[list[dict]]:
+        """同一レベルかつ同一タイトルの通知をグループ化"""
+        from collections import OrderedDict
+        groups: OrderedDict[str, list[dict]] = OrderedDict()
+        for item in items:
+            key = f"{item['level']}:{item.get('title', '')}"
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(item)
+        return list(groups.values())
+
+    async def _send_grouped(self, items: list[dict]):
+        """同一グループの通知を1つのEmbedにまとめて送信"""
+        level = items[0]["level"]
+        title = items[0].get("title") or f"{LEVEL_EMOJI.get(level, 'ℹ️')} {level}"
+        color = LEVEL_COLORS.get(level, 0xFFFFFF)
+
+        # 各メッセージを改行区切りで結合
+        combined = "\n\n".join(item["message"] for item in items)
+
+        # Discord Embedの上限 (4096文字) を考慮
+        if len(combined) > 4000:
+            combined = combined[:3997] + "..."
+
+        embed = {
+            "title": f"{title} ({len(items)}件)",
+            "description": combined,
+            "color": color,
+            "footer": {"text": f"⏰ {BrokerTime.now_str()}"},
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+
+        payload = {"embeds": [embed]}
+
+        try:
+            if not self._client:
+                await self.start()
+            response = await self._client.post(self.webhook_url, json=payload)
+            if response.status_code not in (200, 204):
+                logger.warning(f"Discord送信異常: HTTP {response.status_code}")
+        except Exception as e:
+            logger.error(f"Discord通知失敗: {e}")
+
+    async def _send_immediate(self, message: str, level: str = "INFO", title: Optional[str] = None):
+        """即時送信（バッファを経由しない）"""
         color = LEVEL_COLORS.get(level, 0xFFFFFF)
         emoji = LEVEL_EMOJI.get(level, "ℹ️")
         display_title = title or f"{emoji} {level}"
