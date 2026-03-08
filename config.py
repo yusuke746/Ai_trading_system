@@ -37,18 +37,15 @@ class TradingConfig:
 
     # OpenAI
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-    MODEL_MAIN: str = "gpt-4.1"         # エントリー評価・H1監視用
-    MODEL_FAST: str = "gpt-4.1-mini"    # 緊急判定・WAIT再チェック用
+    MODEL_MAIN: str = "gpt-5"           # エントリー評価・H1監視用
+    MODEL_FAST: str = "gpt-5-mini"      # 緊急判定・WAIT再チェック用
 
     # モデル料金テーブル (USD / 1M tokens)
     # モデル変更時はここだけ更新すればOK
     MODEL_PRICING: dict = field(default_factory=lambda: {
-        "gpt-4.1": {"input": 2.0, "cached_input": 0.50, "output": 8.0},
-        "gpt-4.1-mini": {"input": 0.40, "cached_input": 0.10, "output": 1.6},
-        "gpt-4.1-nano": {"input": 0.10, "cached_input": 0.025, "output": 0.4},
-        # 旧モデル（フォールバック用に残す）
-        "gpt-4o": {"input": 2.5, "cached_input": 1.25, "output": 10.0},
-        "gpt-4o-mini": {"input": 0.15, "cached_input": 0.075, "output": 0.6},
+        "gpt-5": {"input": 1.25, "cached_input": 0.125, "output": 10.0},
+        "gpt-5-mini": {"input": 0.25, "cached_input": 0.025, "output": 2.0},
+        "gpt-5-nano": {"input": 0.05, "cached_input": 0.005, "output": 0.4},
     })
 
     # Discord
@@ -69,12 +66,14 @@ class TradingConfig:
     MAX_JPY_EXPOSURE: int = 1
 
     # AI設定
-    AI_TIMEOUT_MAIN_SEC: int = 20
-    AI_TIMEOUT_FAST_SEC: int = 15
+    AI_TIMEOUT_MAIN_SEC: int = 30
+    AI_TIMEOUT_FAST_SEC: int = 20
     AI_MIN_CONFIDENCE: float = 0.6
     AI_MAX_TP_DEVIATION_PCT: float = 5.0
     AI_MAX_RETRIES: int = 3
     AI_RETRY_BACKOFF_SEC: tuple = (2, 5, 10)
+    AI_REASONING_EFFORT_MAIN: str = "medium"  # gpt-5推論量: low/medium/high
+    AI_REASONING_EFFORT_FAST: str = "low"     # 緊急判定は低推論でコスト抑制
 
     # 監視間隔
     H1_BATCH_CRON_MINUTE: int = 1
@@ -169,14 +168,11 @@ CONFIG = TradingConfig()
 def estimate_api_cost(
     model: str, tokens_in: int, tokens_out: int, cached_tokens: int = 0
 ) -> float:
-    """モデル料金テーブルからAPIコストを概算する
-
-    GPT-5世代移行時もCONFIG.MODEL_PRICINGを更新するだけで対応。
-    """
+    """モデル料金テーブルからAPIコストを概算する"""
     pricing = CONFIG.MODEL_PRICING.get(model)
     if not pricing:
-        # 未知モデルはデフォルト料金で推定
-        return (tokens_in * 2.5 + tokens_out * 10.0) / 1_000_000
+        # 未知モデルはgpt-5料金で推定
+        return (tokens_in * 1.25 + tokens_out * 10.0) / 1_000_000
 
     non_cached = max(0, tokens_in - cached_tokens)
     input_cost = (

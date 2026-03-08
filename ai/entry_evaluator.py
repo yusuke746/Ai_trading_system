@@ -2,7 +2,7 @@
 ai/entry_evaluator.py — エントリー評価エンジン
 
 Webhookデータを受け取り、AIでエントリー可否を判断・執行する。
-web_search付きGPT-4.1 → web_searchなし → GPT-4.1-mini の3段フォールバック。
+web_search付きGPT-5 → web_searchなし → GPT-5-mini の3段フォールバック。
 """
 
 import asyncio
@@ -270,7 +270,7 @@ class EntryEvaluator:
         except Exception as e:
             logger.warning(f"web_searchなしAI呼び出しエラー: {e}")
 
-        # 試行3: GPT-4.1-mini フォールバック
+        # 試行3: GPT-5-mini フォールバック
         try:
             response = await self._call_ai(CONFIG.MODEL_FAST, messages)
             if response:
@@ -280,7 +280,7 @@ class EntryEvaluator:
                     result["_model_used"] = CONFIG.MODEL_FAST
                     return result
         except Exception as e:
-            logger.error(f"GPT-4.1-miniフォールバックも失敗: {e}")
+            logger.error(f"GPT-5-miniフォールバックも失敗: {e}")
 
         # 全失敗
         await self._notifier.send(
@@ -303,6 +303,12 @@ class EntryEvaluator:
             }
             if tools:
                 kwargs["tools"] = tools
+
+            # gpt-5系推論モデルのreasoning_effort制御
+            if model == CONFIG.MODEL_MAIN:
+                kwargs["reasoning"] = {"effort": CONFIG.AI_REASONING_EFFORT_MAIN}
+            elif model == CONFIG.MODEL_FAST:
+                kwargs["reasoning"] = {"effort": CONFIG.AI_REASONING_EFFORT_FAST}
 
             response = await self._client.responses.create(**kwargs)
 
