@@ -283,10 +283,11 @@ class TestPromptBuilder:
             correlation_alert={"has_alert": False},
             todays_events=[],
         )
-        assert len(messages) == 2
+        assert len(messages) == 3
         assert messages[0]["role"] == "system"
-        assert messages[1]["role"] == "user"
-        assert "USDJPY" in messages[1]["content"]
+        assert messages[1]["role"] == "user"  # Semi-Static
+        assert messages[2]["role"] == "user"  # Dynamic
+        assert "USDJPY" in messages[2]["content"]
 
     def test_build_entry_prompt_with_confluence(self):
         from ai.prompt_builder import PromptBuilder
@@ -301,9 +302,9 @@ class TestPromptBuilder:
             todays_events=[],
             all_patterns=["BREAKOUT", "FVG_FILL", "LORENTZIAN"],
         )
-        assert "3戦略が同時発火" in messages[1]["content"]
-        assert "BREAKOUT" in messages[1]["content"]
-        assert "FVG_FILL" in messages[1]["content"]
+        assert "3戦略が同時発火" in messages[2]["content"]
+        assert "BREAKOUT" in messages[2]["content"]
+        assert "FVG_FILL" in messages[2]["content"]
 
     def test_build_h1_batch_prompt(self):
         from ai.prompt_builder import PromptBuilder
@@ -328,8 +329,8 @@ class TestPromptBuilder:
             major_news="なし",
             volatility_regime="NORMAL",
         )
-        assert len(messages) == 2
-        assert "test-id" in messages[1]["content"]
+        assert len(messages) == 3
+        assert "test-id" in messages[2]["content"]
 
     def test_build_emergency_prompt(self):
         from ai.prompt_builder import PromptBuilder
@@ -344,6 +345,60 @@ class TestPromptBuilder:
         )
         assert len(messages) == 2
         assert "TP近接80%" in messages[1]["content"]
+
+
+# ──────────── Semantic Validator テスト ────────────
+
+class TestSemanticValidator:
+    """TP/SL方向矛盾チェックのユニットテスト"""
+
+    def _check_contradiction(self, direction: str, tp: float, sl: float, price: float) -> tuple[bool, str]:
+        """entry_evaluator内のSemantic Validatorロジックを抽出してテスト"""
+        contradiction = False
+        reason_detail = ""
+        if direction == "LONG":
+            if tp <= price:
+                contradiction = True
+                reason_detail = f"LONG but TP({tp}) <= price({price})"
+            if sl >= price:
+                contradiction = True
+                reason_detail = f"LONG but SL({sl}) >= price({price})"
+        elif direction == "SHORT":
+            if tp >= price:
+                contradiction = True
+                reason_detail = f"SHORT but TP({tp}) >= price({price})"
+            if sl <= price:
+                contradiction = True
+                reason_detail = f"SHORT but SL({sl}) <= price({price})"
+        return contradiction, reason_detail
+
+    def test_long_valid(self):
+        ok, _ = self._check_contradiction("LONG", tp=151.0, sl=149.0, price=150.0)
+        assert ok is False
+
+    def test_long_tp_below_price(self):
+        ok, reason = self._check_contradiction("LONG", tp=149.0, sl=148.0, price=150.0)
+        assert ok is True
+        assert "TP" in reason
+
+    def test_long_sl_above_price(self):
+        ok, reason = self._check_contradiction("LONG", tp=151.0, sl=151.0, price=150.0)
+        assert ok is True
+        assert "SL" in reason
+
+    def test_short_valid(self):
+        ok, _ = self._check_contradiction("SHORT", tp=149.0, sl=151.0, price=150.0)
+        assert ok is False
+
+    def test_short_tp_above_price(self):
+        ok, reason = self._check_contradiction("SHORT", tp=151.0, sl=152.0, price=150.0)
+        assert ok is True
+        assert "TP" in reason
+
+    def test_short_sl_below_price(self):
+        ok, reason = self._check_contradiction("SHORT", tp=149.0, sl=149.0, price=150.0)
+        assert ok is True
+        assert "SL" in reason
 
 
 # ──────────── ThesisDB テスト ────────────

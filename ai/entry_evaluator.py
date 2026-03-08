@@ -15,7 +15,7 @@ from typing import Optional
 
 from openai import AsyncOpenAI
 
-from config import CONFIG
+from config import CONFIG, estimate_api_cost
 from core.broker_time import BrokerTime
 from core.models import WebhookPayload, AIEntryResponse, Direction
 from ai.prompt_builder import PromptBuilder
@@ -150,6 +150,36 @@ class EntryEvaluator:
             validation_result = "FAIL_CONFIDENCE"
             decision = "REJECT"
 
+        # TP/SL方向矛盾チェック（Semantic Validator）
+        if decision == "APPROVE":
+            tp = ai_response.get("tp")
+            sl = ai_response.get("sl")
+            current_price = payload.price
+            if tp is not None and sl is not None and current_price:
+                contradiction = False
+                reason_detail = ""
+                if direction == "LONG":
+                    if tp <= current_price:
+                        contradiction = True
+                        reason_detail = f"LONG but TP({tp}) <= price({current_price})"
+                    if sl >= current_price:
+                        contradiction = True
+                        reason_detail = f"LONG but SL({sl}) >= price({current_price})"
+                elif direction == "SHORT":
+                    if tp >= current_price:
+                        contradiction = True
+                        reason_detail = f"SHORT but TP({tp}) >= price({current_price})"
+                    if sl <= current_price:
+                        contradiction = True
+                        reason_detail = f"SHORT but SL({sl}) <= price({current_price})"
+
+                if contradiction:
+                    ai_response["decision"] = "REJECT"
+                    ai_response["reject_reason"] = f"TP/SL方向矛盾: {reason_detail}"
+                    validation_result = "FAIL_SEMANTIC"
+                    decision = "REJECT"
+                    logger.warning(f"Semantic validator拒否: {reason_detail}")
+
         # 相関アラートによるrisk_multiplier強制制限
         if correlation_alert.get("has_alert"):
             rec = correlation_alert["recommended_risk_multiplier"]
@@ -176,7 +206,7 @@ class EntryEvaluator:
         tokens_in = ai_response.get("_tokens_in", 0)
         tokens_out = ai_response.get("_tokens_out", 0)
         model = ai_response.get("_model_used", CONFIG.MODEL_MAIN)
-        cost = self._estimate_cost(model, tokens_in, tokens_out)
+        cost = estimate_api_cost(model, tokens_in, tokens_out)
         purpose = "ENTRY_EVAL" if decision == "APPROVE" else "ENTRY_REJECTED"
         await self._thesis_db.save_api_cost(model, tokens_in, tokens_out, cost, purpose)
 
@@ -532,9 +562,5 @@ class EntryEvaluator:
 
     @staticmethod
     def _estimate_cost(model: str, tokens_in: int, tokens_out: int) -> float:
-        """APIコスト概算"""
-        if "4o-mini" in model:
-            return tokens_in * 0.15 / 1_000_000 + tokens_out * 0.6 / 1_000_000
-        elif "4o" in model:
-            return tokens_in * 2.5 / 1_000_000 + tokens_out * 10.0 / 1_000_000
-        return 0.0
+        """APIコスト概算（後方互換用ラッパー）"""
+        return estimate_api_cost(model, tokens_in, tokens_out)

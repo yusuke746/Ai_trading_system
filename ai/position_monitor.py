@@ -16,7 +16,7 @@ from typing import Optional
 import MetaTrader5 as mt5
 from openai import AsyncOpenAI
 
-from config import CONFIG
+from config import CONFIG, estimate_api_cost
 from core.broker_time import BrokerTime
 from core.models import Direction, SystemStatus
 from ai.prompt_builder import PromptBuilder
@@ -532,8 +532,4 @@ class PositionMonitor:
 
     @staticmethod
     def _estimate_cost(model: str, tokens_in: int, tokens_out: int) -> float:
-        if "4o-mini" in model:
-            return tokens_in * 0.15 / 1_000_000 + tokens_out * 0.6 / 1_000_000
-        elif "4o" in model:
-            return tokens_in * 2.5 / 1_000_000 + tokens_out * 10.0 / 1_000_000
-        return 0.0
+        return estimate_api_cost(model, tokens_in, tokens_out)
