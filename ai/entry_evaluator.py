@@ -235,7 +235,7 @@ class EntryEvaluator:
                 self._call_ai(
                     CONFIG.MODEL_MAIN,
                     messages,
-                    tools=[{"type": "web_search_20250305", "search_context_size": "low"}],
+                    tools=[{"type": CONFIG.WEB_SEARCH_TOOL_TYPE, "search_context_size": CONFIG.WEB_SEARCH_CONTEXT_SIZE}],
                 ),
                 timeout=CONFIG.AI_TIMEOUT_MAIN_SEC + WEB_SEARCH_TIMEOUT_SEC,
             )

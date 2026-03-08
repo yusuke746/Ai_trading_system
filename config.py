@@ -149,6 +149,8 @@ class TradingConfig:
 
     # web_searchフォールバック
     WEB_SEARCH_TIMEOUT_SEC: int = 10
+    WEB_SEARCH_TOOL_TYPE: str = "web_search_20260209"  # OpenAI web_searchツールバージョン
+    WEB_SEARCH_CONTEXT_SIZE: str = "low"               # low/medium/high
 
     # マルチインスタンス防止
     PID_FILE_PATH: str = "trading_system.pid"
