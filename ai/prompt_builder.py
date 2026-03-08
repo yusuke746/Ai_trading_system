@@ -173,6 +173,45 @@ H1_SYSTEM_PROMPT = """あなたはFXポジション管理専門のAIです。
 }"""
 
 
+WAIT_RECHECK_SYSTEM_PROMPT = """あなたはFXトレード再評価AIです。
+以前のAI判断で「WAIT（様子見）」となったシグナルについて、
+最新の市場データを基に「今エントリーすべきか」を素早く判断してください。
+JSONのみで回答。前置き・説明は不要です。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【判断基準】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. 元のWAIT理由が解消されているかを最優先で確認
+2. 現在価格が元のエントリー価格から大きく乖離していたらREJECT
+   - USDJPY: 30pips以上, EURUSD: 20pips以上, GOLD: 200pips以上
+3. エントリー方向と現在のトレンドが一致しているか確認
+4. 状況が改善していればAPPROVEし、新しいTP/SLを設定
+5. 不明確な場合はREJECT（安全側に倒す）
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【出力JSONスキーマ】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{
+  "decision": "APPROVE|REJECT",
+  "confidence": 0.0,
+  "thesis": "判断根拠（100字程度）",
+  "invalidation_conditions": [
+    "根拠崩壊条件1",
+    "根拠崩壊条件2",
+    "根拠崩壊条件3"
+  ],
+  "initial_tp": 0.0,
+  "emergency_sl": 0.0,
+  "risk_multiplier": 1.0,
+  "market_regime": "TRENDING|RANGING|HIGH_VOLATILITY|PRE_EVENT",
+  "reject_reason": "REJECT時の理由、APPROVEならnull"
+}
+
+注意:
+- WAITは出さないこと（APPROVEかREJECTの二択）
+- APPROVEする場合は必ず最新価格に基づくTP/SLを設定"""
+
+
 EMERGENCY_SYSTEM_PROMPT = """FXポジション緊急判定AIです。
 「今すぐ人間に通知すべきか」だけを高速に判断してください。
 JSONのみで回答。余計な説明は不要です。
@@ -304,6 +343,54 @@ class PromptBuilder:
             {"role": "system", "content": ENTRY_SYSTEM_PROMPT},       # Layer 1: Static
             {"role": "user", "content": semi_static_content},          # Layer 2: Semi-Static
             {"role": "user", "content": dynamic_content},              # Layer 3: Dynamic
+        ]
+
+    def build_wait_recheck_prompt(
+        self,
+        original_wait_reason: str,
+        original_ai_response: dict,
+        webhook_data: dict,
+        current_price: float,
+        session: str,
+        mtf_data: dict | None = None,
+    ) -> list[dict]:
+        """WAIT再評価プロンプトを構築（軽量版）"""
+
+        # MTF要約（あれば簡潔に）
+        mtf_summary = ""
+        if mtf_data:
+            if "h4" in mtf_data:
+                mtf_summary += f"H4トレンド: {mtf_data['h4']['trend']}  "
+            if "d1" in mtf_data:
+                mtf_summary += f"日足トレンド: {mtf_data['d1']['trend']}"
+
+        original_price = webhook_data.get("price", 0)
+        price_diff = abs(current_price - original_price) if original_price else 0
+
+        now_xmt = BrokerTime.now()
+        weekday_ja = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"][now_xmt.weekday()]
+
+        user_content = (
+            f"【WAIT再評価】\n"
+            f"銘柄: {webhook_data.get('symbol')}\n"
+            f"方向: {webhook_data.get('direction')}\n"
+            f"元のエントリー価格: {original_price}\n"
+            f"現在価格: {current_price}\n"
+            f"価格差: {price_diff:.5f}\n"
+            f"元のWAIT理由: {original_wait_reason}\n"
+            f"元のconfidence: {original_ai_response.get('confidence', 'N/A')}\n"
+            f"元のthesis: {original_ai_response.get('thesis', 'N/A')}\n\n"
+            f"セッション(XMT): {session}\n"
+            f"現在時刻(XMT): {BrokerTime.now_str()} ({weekday_ja})\n"
+            f"パターン: {webhook_data.get('pattern')}\n"
+            f"ソース: {webhook_data.get('source')}\n"
+        )
+        if mtf_summary:
+            user_content += f"上位足: {mtf_summary}\n"
+
+        return [
+            {"role": "system", "content": WAIT_RECHECK_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
         ]
 
     def build_h1_batch_prompt(

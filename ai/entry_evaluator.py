@@ -313,6 +313,8 @@ class EntryEvaluator:
                 kwargs["reasoning"] = {"effort": CONFIG.AI_REASONING_EFFORT_MAIN}
             elif model == CONFIG.MODEL_FAST:
                 kwargs["reasoning"] = {"effort": CONFIG.AI_REASONING_EFFORT_FAST}
+            elif model == CONFIG.WAIT_RECHECK_MODEL:
+                kwargs["reasoning"] = {"effort": CONFIG.WAIT_RECHECK_REASONING_EFFORT}
 
             response = await self._client.responses.create(**kwargs)
 
@@ -534,7 +536,7 @@ class EntryEvaluator:
             )
 
     async def _recheck_wait(self, symbol: str):
-        """WAIT中のシグナルを再チェック（AI再呼び出しなし）"""
+        """WAIT中のシグナルをAI再評価で再チェック（gpt-5-nano使用）"""
         entry = _wait_queue.get(symbol)
         if not entry:
             return
@@ -548,25 +550,98 @@ class EntryEvaluator:
             )
             return
 
-        # ブロック条件だけ再チェック
+        # Step 1: ガード条件チェック
         direction = entry["webhook_data"].get("direction", "LONG")
-        can_enter, _ = await self._guardian.can_enter_new_trade(symbol, direction)
+        can_enter, block_reason = await self._guardian.can_enter_new_trade(symbol, direction)
         event_soon, _ = await self._calendar.is_high_impact_event_soon()
 
-        if can_enter and not event_soon:
-            logger.info(f"WAIT解除: {symbol} → 元のAI判定でエントリー実行")
-            await self._execute_entry(
-                symbol, direction, entry["ai_response"], entry["webhook_data"]
-            )
-            del _wait_queue[symbol]
-        else:
+        if not can_enter or event_soon:
             entry["retry_count"] += 1
             if entry["retry_count"] >= WAIT_MAX_RETRIES:
                 del _wait_queue[symbol]
                 await self._notifier.send(
-                    f"⏳ WAIT最終破棄: {symbol}（再チェック{WAIT_MAX_RETRIES}回超過）",
+                    f"⏳ WAIT最終破棄: {symbol}（ガード条件未解除: {block_reason}）",
                     level="INFO",
                 )
+            return
+
+        # Step 2: 現在価格取得
+        try:
+            current_price = await self._mt5_client.get_current_price(symbol, direction)
+        except Exception:
+            logger.warning(f"WAIT再評価: {symbol} 現在価格取得失敗")
+            return
+
+        if not current_price:
+            return
+
+        # Step 3: MTFデータ取得（取得失敗は無視）
+        try:
+            mtf_data = await self._mt5_client.get_mtf_summary(symbol)
+        except Exception:
+            mtf_data = None
+
+        # Step 4: 軽量AIで再評価
+        wait_reason = entry["ai_response"].get("reject_reason", "条件未達")
+        messages = self._prompt_builder.build_wait_recheck_prompt(
+            original_wait_reason=wait_reason,
+            original_ai_response=entry["ai_response"],
+            webhook_data=entry["webhook_data"],
+            current_price=current_price,
+            session=BrokerTime.get_session(),
+            mtf_data=mtf_data,
+        )
+
+        recheck_model = CONFIG.WAIT_RECHECK_MODEL
+        try:
+            response = await asyncio.wait_for(
+                self._call_ai(recheck_model, messages),
+                timeout=CONFIG.AI_TIMEOUT_FAST_SEC,
+            )
+            if response:
+                result = self._parse_ai_response(response)
+            else:
+                result = None
+        except asyncio.TimeoutError:
+            logger.warning(f"WAIT再評価タイムアウト: {symbol}")
+            result = None
+        except Exception as e:
+            logger.warning(f"WAIT再評価エラー: {symbol} - {e}")
+            result = None
+
+        if not result:
+            entry["retry_count"] += 1
+            if entry["retry_count"] >= WAIT_MAX_RETRIES:
+                del _wait_queue[symbol]
+                await self._notifier.send(
+                    f"⏳ WAIT最終破棄: {symbol}（AI再評価失敗）",
+                    level="INFO",
+                )
+            return
+
+        decision = result.get("decision", "REJECT")
+        logger.info(f"WAIT再評価結果: {symbol} → {decision} (model={recheck_model})")
+
+        # コスト記録
+        result["_model_used"] = recheck_model
+
+        if decision == "APPROVE":
+            # 再評価AIの新しいTP/SLでエントリー
+            await self._notifier.send(
+                f"✅ WAIT解除({recheck_model}): {symbol} {direction}\n"
+                f"元のWAIT理由: {wait_reason}\n"
+                f"再評価thesis: {result.get('thesis', 'N/A')}",
+                level="INFO",
+            )
+            await self._execute_entry(symbol, direction, result, entry["webhook_data"])
+            del _wait_queue[symbol]
+        else:
+            reject_reason = result.get("reject_reason", "条件未改善")
+            del _wait_queue[symbol]
+            await self._notifier.send(
+                f"❌ WAIT→REJECT({recheck_model}): {symbol}\n理由: {reject_reason}",
+                level="INFO",
+            )
 
     # ──────────── ユーティリティ ────────────
 

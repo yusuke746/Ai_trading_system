@@ -146,6 +146,8 @@ class TradingConfig:
     WAIT_TTL_MINUTES: int = 15
     WAIT_MAX_RETRIES: int = 2
     WAIT_RECHECK_INTERVAL_SEC: int = 300
+    WAIT_RECHECK_MODEL: str = "gpt-5-nano"  # WAIT再評価用（低コスト）
+    WAIT_RECHECK_REASONING_EFFORT: str = "low"
 
     # web_searchフォールバック
     WEB_SEARCH_TIMEOUT_SEC: int = 10

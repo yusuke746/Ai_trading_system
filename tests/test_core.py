@@ -341,6 +341,34 @@ class TestPromptBuilder:
         assert "BULLISH" in messages[1]["content"]
         assert "150.5" in messages[1]["content"]
 
+    def test_build_wait_recheck_prompt(self):
+        from ai.prompt_builder import PromptBuilder
+        pb = PromptBuilder()
+        messages = pb.build_wait_recheck_prompt(
+            original_wait_reason="レジスタンス付近、ブレイクを待て",
+            original_ai_response={
+                "decision": "WAIT",
+                "confidence": 0.55,
+                "thesis": "上昇トレンドだがレジスタンス接触中",
+                "reject_reason": "レジスタンス付近、ブレイクを待て",
+            },
+            webhook_data={"symbol": "USDJPY", "direction": "LONG", "price": 150.0, "pattern": "BREAKOUT", "source": "multi_strategy_signal"},
+            current_price=150.25,
+            session="LONDON",
+            mtf_data={
+                "h4": {"trend": "BULLISH"},
+                "d1": {"trend": "BULLISH"},
+            },
+        )
+        assert len(messages) == 2
+        assert "WAIT再評価" in messages[1]["content"]
+        assert "レジスタンス付近" in messages[1]["content"]
+        assert "150.25" in messages[1]["content"]
+        assert "150.0" in messages[1]["content"]
+        assert "H4トレンド: BULLISH" in messages[1]["content"]
+        # WAITは出さないこと、という指示がシステムプロンプトにある
+        assert "WAITは出さないこと" in messages[0]["content"]
+
     def test_build_h1_batch_prompt(self):
         from ai.prompt_builder import PromptBuilder
         pb = PromptBuilder()
