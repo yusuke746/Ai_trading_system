@@ -1,8 +1,8 @@
 # 自律型AIトレーディングシステム 設計仕様書
 
-**バージョン**: 5.0
-**作成日**: 2025年3月（v5.0: 2026年3月改訂）
-**対象実装者**: VSCode Agent (Claude Opus)
+**バージョン**: 6.0
+**作成日**: 2025年3月（v6.0: 2026年7月改訂）
+**対象実装者**: VSCode Agent (Claude Opus 4.6)
 
 ---
 
@@ -68,14 +68,14 @@
 | 役割               | 技術                                        |
 | ------------------ | ------------------------------------------- |
 | シグナル生成       | TradingView (Pine Script v5)                |
-| オーケストレーター | Python 3.11+ / FastAPI / asyncio            |
-| AIエンジン         | OpenAI API (GPT-4o / GPT-4o-mini)           |
+| オーケストレーター | Python 3.13+ / FastAPI / asyncio             |
+| AIエンジン         | OpenAI Responses API (GPT-5.2 / GPT-5-mini / GPT-5-nano) |
 | 執行エンジン       | MetaTrader 5 (Python MetaTrader5ライブラリ) |
 | DB                 | SQLite (WALモード)                          |
 | スケジューラー     | APScheduler (AsyncIOScheduler)              |
 | 通知               | Discord Webhook                             |
 | 経済指標           | Forex Factory RSS (無料)                    |
-| ニュース           | OpenAI web_search機能（tools）              |
+| ニュース           | OpenAI web_search_preview（Responses API組込ツール） |
 | インフラ           | Windows Server VPS (24時間稼働)             |
 | ブローカー         | XMTrading                                   |
 
@@ -102,12 +102,12 @@ GOLD   - コモディティ・FXと異なる値動き(XAUUSD)
 フィルター:        H1トレンド確認
 
 【リスク設定】
-1トレードリスク:     口座残高の 1.0%
-最大同時保有数:      3ポジション（1銘柄1ポジ原則）
-最大総エクスポージャー: 口座残高の 3.0%
-日次最大ドローダウン: 口座残高の 3.0%（CB発動閾値）
-USD絡みポジ上限:     2
-JPY絡みポジ上限:     1（GOLDはJPY絡みにカウントしない）
+1トレードリスク:     口座残高の 2.0%
+最大同時保有数:      5ポジション（1銘柄1ポジ原則）
+最大総エクスポージャー: 口座残高の 6.0%
+日次最大ドローダウン: 口座残高の 6.0%（CB発動閾値）
+USD絡みポジ上限:     4
+JPY絡みポジ上限:     2（GOLDはJPY絡みにカウントしない）
 ```
 
 ---
@@ -115,50 +115,53 @@ JPY絡みポジ上限:     1（GOLDはJPY絡みにカウントしない）
 ## 4. プロジェクト構造
 
 ```
-trading_system/
-├── config.py                      # 設定値一元管理・デモ/本番フラグ
-├── main.py                        # FastAPIエントリーポイント・スケジューラー
+Ai_trading_system/
+├── config.py                      # 設定値一元管理・デモ/本番フラグ・コスト試算
+├── main.py                        # FastAPIエントリーポイント・スケジューラー（10ジョブ）
 │
 ├── core/
 │   ├── models.py                  # データ型定義（Pydantic / Enum）
 │   ├── broker_time.py             # XMTサーバー時間管理
 │   ├── lot_calculator.py          # JPY口座専用ロット計算
-│   ├── mt5_client.py              # MT5接続・注文管理
+│   ├── mt5_client.py              # MT5接続・注文管理・SpreadTracker統合
 │   ├── thesis_db.py               # SQLite DB管理・自動パージ
-│   └── risk_guardian.py           # リスク管理・サーキットブレーカー
+│   ├── risk_guardian.py           # リスク管理・サーキットブレーカー
+│   └── spread_tracker.py          # 適応型スプレッド上限（p95×1.2）
 │
 ├── ingestion/
 │   ├── economic_calendar.py       # Forex Factory RSS取得
 │   └── webhook_receiver.py        # TradingView Webhook受信・バリデーション
 │
 ├── ai/
-│   ├── prompt_builder.py          # プロンプト構築（エントリー/監視）
-│   ├── entry_evaluator.py         # エントリー判断AI (GPT-4o)
-│   └── position_monitor.py        # H1バッチ監視AI + 緊急判定
+│   ├── prompt_builder.py          # プロンプト構築（6種・Prefix Caching 3層）
+│   ├── entry_evaluator.py         # エントリー判断AI (GPT-5.2) + WAIT再評価
+│   └── position_monitor.py        # H1バッチ + 2階層価格近接監視（nano→GPT-5.2）
 │
 ├── notifications/
-│   └── discord_notifier.py        # Discord通知（レベル別フォーマット）
+│   └── discord_notifier.py        # Discord通知（バッチング・重複抑制付き）
+│
+├── pinescript/
+│   ├── multi_strategy_signal.pine # カスタムインジケータ
+│   └── SETUP_GUIDE.md            # セットアップ手順
 │
 ├── tests/
-│   ├── test_lot_calculator.py     # ロット計算テスト（必須）
-│   ├── test_broker_time.py        # XMT時間変換テスト
-│   ├── test_risk_guardian.py      # CB発動テスト
-│   ├── test_market_close.py       # 週末クローズ・DEAD_ZONEテスト
-│   ├── test_semantic_validation.py # セマンティックバリデーションテスト
-│   ├── test_correlation_alert.py  # 相関アラートテスト
-│   └── mock_ai.py                 # モックAIクライアント（統合テスト用）
+│   └── test_core.py               # 全テスト統合（55テスト・8クラス）
 │
 ├── backtest/
 │   └── thesis_backtester.py       # デモ検証用バックテストパイプライン
 │
-├── trading.db                     # SQLiteデータファイル
+├── data/
+│   └── trading.db                 # SQLiteデータファイル
+│
+├── logs/                          # ログファイル出力先
 ├── requirements.txt
-└── .env                           # 機密情報（Gitに含めない）
+├── .env                           # 機密情報（Gitに含めない）
+└── .env.template                  # .envテンプレート
 ```
 
 ---
 
-## 5. 監視アーキテクチャ（3層構造）
+## 5. 監視アーキテクチャ（3層構造 + 2階層AI）
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -172,16 +175,22 @@ trading_system/
 └──────────────────────┬──────────────────────────────┘
                        │ 条件合致時のみ
 ┌──────────────────────▼──────────────────────────────┐
-│  Layer 2: GPT-4o-mini（緊急判定・安価・高速）         │
+│  Layer 2: 2階層AI評価（nano一次審査→精密評価）        │
 │                                                     │
-│  ・「今すぐDiscord通知を送るか否か」の二択判定        │
-│  ・出力: ALERT_HUMAN / CONTINUE_MONITORING          │
-│  ・ALERT_HUMANならDiscordへ即時通知                  │
-│  ・人間が判断してMT5を手動操作                       │
+│  Step 1: GPT-5-nano 一次審査（トリアージ）           │
+│    ・「AIで精密評価すべきか否か」の二択判定           │
+│    ・出力: {"alert": true/false}                    │
+│    ・alert=false → スルー（コストほぼゼロ）          │
+│    ・alert=true → Step 2へエスカレーション           │
+│                                                     │
+│  Step 2: GPT-5.2 精密評価（自動実行付き）            │
+│    ・ポジション詳細・市場コンテキスト・Thesis情報で   │
+│      HOLD/UPDATE_TP/PARTIAL_CLOSE/FULL_CLOSEを判断  │
+│    ・判断結果をMT5で自動実行 + Discord通知           │
 └──────────────────────┬──────────────────────────────┘
                        │ 独立して並行稼働
 ┌──────────────────────▼──────────────────────────────┐
-│  Layer 3: GPT-4o（H1定期バッチ・高精度）              │
+│  Layer 3: GPT-5.2（H1定期バッチ・高精度）             │
 │                                                     │
 │  ・H1足確定の1分後（毎時01分）に全ポジを一括査定      │
 │  ・Thesis健全性評価 / TP更新 / 分割決済判断          │
@@ -189,14 +198,38 @@ trading_system/
 └─────────────────────────────────────────────────────┘
 ```
 
-### AI呼び出しフォールバック（Layer 3）
+### AI呼び出しフォールバック
+
+**エントリー評価（3段フォールバック）:**
 
 ```
-GPT-4o
-  ↓ タイムアウト(20秒) or エラー
-GPT-4o-mini
-  ↓ タイムアウト(15秒) or エラー
-ルールベース（全ポジHOLD・新規エントリー停止・Discord通知）
+GPT-5.2 + web_search_preview
+  ↓ タイムアウト(90秒+10秒) or エラー
+GPT-5.2（web_searchなし）
+  ↓ タイムアウト(90秒) or エラー
+GPT-5-mini
+  ↓ タイムアウト(30秒) or エラー
+REJECT（安全側に倒す）+ Discord CRITICAL通知
+```
+
+**H1バッチ（Layer 3）:**
+
+```
+GPT-5.2
+  ↓ タイムアウト(90秒) or エラー
+GPT-5-mini
+  ↓ タイムアウト(30秒) or エラー
+ルールベース（全ポジHOLD・新規エントリー停止・MONITOR_ONLYに移行・Discord通知）
+```
+
+**価格近接精密評価（Layer 2 Step 2）:**
+
+```
+GPT-5.2
+  ↓ タイムアウト(90秒) or エラー
+GPT-5-mini
+  ↓ 全失敗
+Discord CRITICAL通知（手動確認依頼）
 ```
 
 ---
@@ -216,8 +249,8 @@ GPT-4o-mini
    ├─ 経済指標30分前チェック（ForexFactory）
    └─ NG → 即時reject（Discordに理由通知）
 
-3. AI（GPT-4o）: エントリー評価
-   入力: テクニカルシグナル + 口座状況 + XMT時間 + web_search（最新ニュース）
+3. AI（GPT-5.2）: エントリー評価
+   入力: テクニカルシグナル + 口座状況 + XMT時間 + web_search_preview（最新ニュース） + MTFデータ（H4/Daily）
    出力:
    ├─ decision: APPROVE / REJECT / WAIT
    ├─ confidence: 0.0〜1.0
@@ -247,7 +280,7 @@ GPT-4o-mini
 【H1バッチ（毎時01分・Layer 3）】
 1. MT5から全アクティブポジション取得
 2. ThesisDBからThesis情報を結合
-3. GPT-4oに一括送信（共通コンテキスト1回 + 個別差分）
+3. GPT-5.2に一括送信（共通コンテキスト1回 + 個別差分）
 4. 各ポジションへの指示を実行:
    ├─ HOLD     → 何もしない
    ├─ UPDATE_TP → OrderModifyでTP更新
@@ -257,11 +290,13 @@ GPT-4o-mini
 6. Discord通知（🟢 査定完了ログ）
 
 【Layer 1 → Layer 2（常時・60秒ごと）】
-- 急変動検知 → GPT-4o-miniで「人間を呼ぶか」判定
-- ALERT_HUMAN → Discord通知（🔴 手動介入要請）
+- TP/SL 80%到達 or 急変動検知
+  → Step 1: GPT-5-nanoで一次審査（alert: true/false）
+  → Step 2: alert=trueならGPT-5.2で精密評価
+  → 判断結果をMT5で自動実行 + Discord通知
 
 【サーキットブレーカー（30秒ごと）】
-- 日次DD 3%超 → 全ポジ強制決済 → システムLOCK
+- 日次DD 6%超 → 全ポジ強制決済 → システムLOCK
 - Discord通知（🔴 緊急・CB発動）
 ```
 
@@ -278,7 +313,7 @@ GPT-4o-mini
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -291,13 +326,12 @@ class TradingConfig:
     IS_DEMO_MODE: bool = True
 
     # MT5 口座情報（.envから取得）
-    MT5_LOGIN_DEMO: int = int(os.getenv("MT5_LOGIN_DEMO", 0))
-    MT5_LOGIN_LIVE: int = int(os.getenv("MT5_LOGIN_LIVE", 0))
+    MT5_LOGIN_DEMO: int = int(os.getenv("MT5_LOGIN_DEMO", "0"))
+    MT5_LOGIN_LIVE: int = int(os.getenv("MT5_LOGIN_LIVE", "0"))
     MT5_PASSWORD:   str = os.getenv("MT5_PASSWORD", "")
     MT5_SERVER_DEMO: str = os.getenv("MT5_SERVER_DEMO", "XMTrading-Demo")
     MT5_SERVER_LIVE: str = os.getenv("MT5_SERVER_LIVE", "XMTrading-Real")
 
-    # 使用する口座情報（IS_DEMO_MODEで自動選択）
     @property
     def MT5_LOGIN(self) -> int:
         return self.MT5_LOGIN_DEMO if self.IS_DEMO_MODE else self.MT5_LOGIN_LIVE
@@ -306,33 +340,48 @@ class TradingConfig:
     def MT5_SERVER(self) -> str:
         return self.MT5_SERVER_DEMO if self.IS_DEMO_MODE else self.MT5_SERVER_LIVE
 
-    # OpenAI
+    # OpenAI — Responses API を使用（Chat Completions ではない）
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-    MODEL_MAIN:  str = "gpt-4o"        # エントリー評価・H1バッチ
-    MODEL_FAST:  str = "gpt-4o-mini"   # 緊急判定・フォールバック
+    MODEL_MAIN:  str = "gpt-5.2"       # エントリー評価・H1バッチ・精密評価
+    MODEL_FAST:  str = "gpt-5-mini"    # 緊急判定・フォールバック
+
+    # モデル料金テーブル (USD / 1M tokens)
+    MODEL_PRICING: dict = field(default_factory=lambda: {
+        "gpt-5.2":    {"input": 1.75, "cached_input": 0.175, "output": 14.0},
+        "gpt-5":      {"input": 1.25, "cached_input": 0.125, "output": 10.0},
+        "gpt-5-mini": {"input": 0.25, "cached_input": 0.025, "output": 2.0},
+        "gpt-5-nano": {"input": 0.05, "cached_input": 0.005, "output": 0.4},
+    })
 
     # Discord
     DISCORD_WEBHOOK_URL: str = os.getenv("DISCORD_WEBHOOK_URL", "")
 
+    # FastAPI
+    FASTAPI_PORT: int = int(os.getenv("FASTAPI_PORT", "80"))
+
     # 対象銘柄
-    SYMBOLS: list = ("USDJPY", "EURUSD", "GOLD")
+    SYMBOLS: tuple = ("USDJPY", "EURUSD", "GOLD")
 
     # リスク設定
-    MAX_RISK_PER_TRADE_PCT:    float = 1.0
-    MAX_DAILY_DRAWDOWN_PCT:    float = 3.0
-    MAX_TOTAL_EXPOSURE_PCT:    float = 3.0
-    MAX_POSITIONS:             int   = 3
-    MAX_USD_EXPOSURE:          int   = 2
-    MAX_JPY_EXPOSURE:          int   = 1
+    MAX_RISK_PER_TRADE_PCT:    float = 2.0
+    MAX_DAILY_DRAWDOWN_PCT:    float = 6.0
+    MAX_TOTAL_EXPOSURE_PCT:    float = 6.0
+    MAX_POSITIONS:             int   = 5
+    MAX_USD_EXPOSURE:          int   = 4
+    MAX_JPY_EXPOSURE:          int   = 2
 
     # AI設定
-    AI_TIMEOUT_MAIN_SEC:   int   = 20
-    AI_TIMEOUT_FAST_SEC:   int   = 15
+    AI_TIMEOUT_MAIN_SEC:   int   = 90   # gpt-5系推論モデルは思考時間が必要
+    AI_TIMEOUT_FAST_SEC:   int   = 30
     AI_MIN_CONFIDENCE:     float = 0.6
-    AI_MAX_TP_DEVIATION_PCT: float = 5.0  # TP異常値判定の乖離率
+    AI_MAX_TP_DEVIATION_PCT: float = 5.0
+    AI_MAX_RETRIES:        int   = 3
+    AI_RETRY_BACKOFF_SEC:  tuple = (2, 5, 10)
+    AI_REASONING_EFFORT_MAIN: str = "medium"  # gpt-5推論量: low/medium/high
+    AI_REASONING_EFFORT_FAST: str = "low"     # 緊急判定は低推論でコスト抑制
 
     # 監視間隔
-    H1_BATCH_CRON_MINUTE:     int = 1    # 毎時何分に実行するか
+    H1_BATCH_CRON_MINUTE:     int = 1
     PRICE_CHECK_INTERVAL_SEC: int = 60
     DD_CHECK_INTERVAL_SEC:    int = 30
 
@@ -340,19 +389,35 @@ class TradingConfig:
     PRE_EVENT_STOP_MINUTES: int = 30
 
     # 市場クローズ・週末管理
-    FRIDAY_ENTRY_CUTOFF_HOUR: int = 20       # 金曜XMT何時以降エントリー停止
-    FRIDAY_FORCE_CLOSE_HOUR:  int = 22       # 金曜XMT何時に全決済実行
-    FRIDAY_FINAL_CHECK_HOUR:  int = 22       # 金曜残存確認時
+    MARKET_HOURS: dict = field(default_factory=lambda: {...})  # 銘柄別取引時間
+    FRIDAY_ENTRY_CUTOFF_HOUR: int = 20
+    FRIDAY_FORCE_CLOSE_HOUR:  int = 22
+    FRIDAY_FINAL_CHECK_HOUR:  int = 22
     FRIDAY_FINAL_CHECK_MINUTE: int = 30
-    WEEKLY_OPEN_WAIT_MINUTES: int = 15       # 週明けスプレッド安定待機
-    DEAD_ZONE_HARD_BLOCK: bool = True        # DEAD_ZONEをハードブロック
+    WEEKLY_OPEN_WAIT_MINUTES: int = 15
+    DEAD_ZONE_HARD_BLOCK: bool = True
 
-    # スプレッド制限（points単位）
-    SPREAD_LIMITS_POINTS: dict = None  # __post_init__で設定
+    # スプレッド制限（points単位）— ウォームアップ時・フォールバック用
+    SPREAD_LIMITS_POINTS: dict = field(default_factory=lambda: {
+        "USDJPY": 30, "EURUSD": 25, "GOLD": 50,
+    })
+    # 適応型スプレッド設定（SpreadTrackerが使用）
+    SPREAD_HARD_MAX_POINTS: dict = field(default_factory=lambda: {
+        "USDJPY": 60, "EURUSD": 50, "GOLD": 100,  # 絶対拒否ライン
+    })
+    SPREAD_ADAPTIVE_PERCENTILE: float = 95.0  # p95を基準
+    SPREAD_ADAPTIVE_MULTIPLIER: float = 1.2   # p95 × 1.2
+    SPREAD_HISTORY_HOURS: int = 168            # 7日間の履歴
+    SPREAD_MIN_SAMPLES: int = 60              # ウォームアップ最小サンプル数
+
+    # 物理SL上限（pips）
+    MAX_SL_PIPS: dict = field(default_factory=lambda: {
+        "USDJPY": 80, "EURUSD": 60, "GOLD": 300,
+    })
 
     # Webhook認証
     WEBHOOK_SECRET: str = os.getenv("WEBHOOK_SECRET", "")
-    DEDUP_WINDOW_SEC: int = 300              # 重複排除ウィンドウ（秒）
+    DEDUP_WINDOW_SEC: int = 300
 
     # ヘルスチェック
     STATUS_API_TOKEN: str = os.getenv("STATUS_API_TOKEN", "")
@@ -363,22 +428,59 @@ class TradingConfig:
     PURGE_API_COST_DAYS:    int = 30
     PURGE_AI_AUDIT_DAYS:    int = 14
     PURGE_THESIS_DAYS:      int = 180
-    DB_SIZE_ALERT_MB:       int = 50     # DB肥大化アラート閾値
-    AI_AUDIT_RESPONSE_MAX_CHARS: int = 4000  # full_response保存上限
+    DB_SIZE_ALERT_MB:       int = 50
+    AI_AUDIT_RESPONSE_MAX_CHARS: int = 4000
 
     # WAITハンドリング
-    WAIT_TTL_MINUTES:         int = 15   # WAIT有効期限（M15足1本分）
-    WAIT_MAX_RETRIES:         int = 2    # WAIT再チェック回数
-    WAIT_RECHECK_INTERVAL_SEC: int = 300 # 再チェック間隔（5分）
+    WAIT_TTL_MINUTES:         int = 15
+    WAIT_MAX_RETRIES:         int = 2
+    WAIT_RECHECK_INTERVAL_SEC: int = 300
+    WAIT_RECHECK_MODEL: str = "gpt-5-nano"     # WAIT再評価用（低コスト）
+    WAIT_RECHECK_REASONING_EFFORT: str = "low"
 
     # web_searchフォールバック
-    WEB_SEARCH_TIMEOUT_SEC: int = 10     # web_search追加タイムアウト
+    WEB_SEARCH_TIMEOUT_SEC: int = 10
+    WEB_SEARCH_TOOL_TYPE: str = "web_search_preview"  # Responses API組み込みツール
+    WEB_SEARCH_CONTEXT_SIZE: str = "low"
 
     # マルチインスタンス防止
     PID_FILE_PATH: str = "trading_system.pid"
 
+    # MT5注文設定
+    MT5_MAGIC_NUMBER: int = 20250101
+    MT5_DEVIATION_POINTS: int = 10
+
+    # ログ設定
+    LOG_FILE: str = "logs/trading_system.log"
+    LOG_MAX_BYTES: int = 10 * 1024 * 1024  # 10MB
+    LOG_BACKUP_COUNT: int = 5
+
 CONFIG = TradingConfig()
+
+
+def estimate_api_cost(
+    model: str, tokens_in: int, tokens_out: int, cached_tokens: int = 0
+) -> float:
+    """モデル料金テーブルからAPIコストを概算する（Prefix Caching対応）"""
+    pricing = CONFIG.MODEL_PRICING.get(model)
+    if not pricing:
+        return (tokens_in * 1.25 + tokens_out * 10.0) / 1_000_000
+    non_cached = max(0, tokens_in - cached_tokens)
+    input_cost = (
+        non_cached * pricing["input"] + cached_tokens * pricing["cached_input"]
+    ) / 1_000_000
+    output_cost = tokens_out * pricing["output"] / 1_000_000
+    return input_cost + output_cost
 ```
+
+> **Responses API について:**
+> 本システムは OpenAI の **Responses API** (`client.responses.create()`) を使用する。
+> 旧 Chat Completions API (`client.chat.completions.create()`) ではない。
+> - `input=messages` でプロンプトを渡す（`messages=` ではない）
+> - `reasoning={"effort": "medium"}` で推論量を制御
+> - `tools=[{"type": "web_search_preview", ...}]` でweb検索統合
+> - レスポンスの `output` には `reasoning` アイテム（`content=None`）と `message` アイテムが含まれる
+> - テキスト抽出は `item.type == "message"` のアイテムのみ対象とすること
 
 **`.env` ファイルテンプレート:**
 
@@ -515,7 +617,7 @@ class OrderResult(BaseModel):
 
 # ─── AIエントリー評価レスポンス ───
 class AIEntryResponse(BaseModel):
-    """GPT-4oのエントリー評価JSON出力"""
+    """GPT-5.2のエントリー評価JSON出力"""
     decision: Decision
     confidence: float = Field(ge=0.0, le=1.0)
     thesis: str
@@ -550,13 +652,13 @@ class AIPositionInstruction(BaseModel):
     urgency: str = "NORMAL"          # NORMAL / HIGH
 
 class AIH1BatchResponse(BaseModel):
-    """H1バッチ監視のGPT-4o出力"""
+    """H1バッチ監視のGPT-5.2出力"""
     positions: list[AIPositionInstruction]
 
 
 # ─── AI緊急判定レスポンス ───
 class AIEmergencyResponse(BaseModel):
-    """GPT-4o-miniの緊急判定出力"""
+    """緊急判定出力（nanoトリアージュ用にも使用）"""
     action: str                      # ALERT_HUMAN / CONTINUE_MONITORING
     reason: str
 
@@ -893,6 +995,70 @@ async def get_daily_pnl(self) -> float:
 - retcode != TRADE_RETCODE_DONE の場合はDiscordへ警告通知
 - 接続切断時は自動再接続を試行（上記参照）
 
+**適応型スプレッド管理（SpreadTracker統合）:**
+
+MT5Clientは `core/spread_tracker.py` の `SpreadTracker` を内蔵し、適応型スプレッド上限を管理する。
+
+```python
+# MT5Client.__init__() で SpreadTracker を生成
+self.spread_tracker = SpreadTracker()
+
+# 60秒ごとにスケジューラーから呼ばれ、全銘柄のスプレッドを記録
+async def sample_spreads(self):
+    """スプレッドサンプリング（適応型上限の学習データ蓄積）"""
+    for symbol in CONFIG.SYMBOLS:
+        spread = self._get_spread_points(symbol)
+        if spread is not None:
+            self.spread_tracker.record(symbol, spread)
+
+# スプレッドチェック（注文前に自動実行）
+def check_spread(self, symbol: str) -> tuple[bool, float]:
+    """適応型上限でスプレッドチェック"""
+    spread_points = self._get_spread_points(symbol)
+    limit = self.spread_tracker.get_limit(symbol)  # p95×1.2 or フォールバック
+    return (spread_points <= limit, spread_points)
+```
+
+**MTFデータ取得（H4/Daily）:**
+
+```python
+async def get_mtf_summary(self, symbol: str) -> dict:
+    """上位足データを取得（エントリー評価のコンテキスト用）"""
+    # H4足: 直近6本（24時間分）
+    # D1足: 直近5本（1週間分）
+    return {"h4": h4_data, "d1": d1_data}
+```
+
+---
+
+### 7.4b `core/spread_tracker.py` — 適応型スプレッド上限
+
+**責務**: 銘柄ごとのスプレッド履歴を蓄積し、統計的に妥当な上限値を動的に算出する。
+
+```python
+class SpreadTracker:
+    """
+    適応型スプレッド上限管理
+
+    ・7日間（168時間）の履歴をdequeで保持（銘柄別）
+    ・p95 × 1.2 を適応型上限とする
+    ・ハードMAX（絶対上限）でクランプ
+    ・ウォームアップ期間（< 60サンプル）はconfig固定値にフォールバック
+    """
+    def record(self, symbol: str, spread_points: float)
+    def get_limit(self, symbol: str) -> float
+    def get_stats(self, symbol: str) -> dict  # 統計情報（p50/p95/p99/サンプル数）
+```
+
+| 設定項目 | デフォルト | 説明 |
+|---------|----------|------|
+| `SPREAD_ADAPTIVE_PERCENTILE` | 95.0 | パーセンタイル基準 |
+| `SPREAD_ADAPTIVE_MULTIPLIER` | 1.2 | パーセンタイル乗数 |
+| `SPREAD_HISTORY_HOURS` | 168 | 履歴保持期間（7日） |
+| `SPREAD_MIN_SAMPLES` | 60 | ウォームアップ閾値（≒1時間） |
+| `SPREAD_HARD_MAX_POINTS` | USDJPY:60, EURUSD:50, GOLD:100 | 絶対拒否ライン |
+| `SPREAD_LIMITS_POINTS` | USDJPY:30, EURUSD:25, GOLD:50 | フォールバック固定値 |
+
 ---
 
 ### 7.5 `core/thesis_db.py` — DBスキーマ・自動パージ
@@ -1046,7 +1212,7 @@ api_cost_log (
     model TEXT,
     tokens_in INTEGER,
     tokens_out INTEGER,
-    cost_usd REAL,      -- 概算（GPT-4o: $2.5/1Mtokens_in, $10/1Mtokens_out）
+    cost_usd REAL,      -- 概算（GPT-5.2: $1.75/1Mtokens_in, $14/1Mtokens_out）
     purpose TEXT,       -- ENTRY_EVAL / H1_MONITOR / EMERGENCY / ENTRY_REJECTED
     broker_time TEXT,
     created_at TEXT
@@ -1057,7 +1223,7 @@ ai_audit_log (
     id INTEGER PK AUTOINCREMENT,
     request_id TEXT,         -- UUID: リクエスト識別子
     purpose TEXT,            -- ENTRY_EVAL / H1_MONITOR / EMERGENCY
-    model TEXT,              -- gpt-4o / gpt-4o-mini
+    model TEXT,              -- gpt-5.2 / gpt-5-mini / gpt-5-nano
     prompt_summary TEXT,     -- プロンプトの要約（先頭500文字）
     full_response TEXT,      -- AIの生のJSON応答（全文）
     parsed_decision TEXT,    -- APPROVE / REJECT / WAIT / HOLD / etc.
@@ -1124,11 +1290,11 @@ LOCKED          - 全機能停止（CB発動後・手動解除必須）
 
 | ガード             | 条件                 | アクション                          |
 | ------------------ | -------------------- | ----------------------------------- |
-| 日次DDチェック     | DD ≥ 3.0%           | CB発動（全決済+LOCKED）             |
-| 総エクスポージャー | リスク合計 > 3.0%    | MONITOR_ONLY                        |
-| ポジション数       | ≥ 3                 | MONITOR_ONLY                        |
-| USD集中            | USD絡み ≥ 3         | 新規エントリー拒否                  |
-| JPY集中            | JPY絡み ≥ 2         | 新規エントリー拒否                  |
+| 日次DDチェック     | DD ≥ 6.0%           | CB発動（全決済+LOCKED）             |
+| 総エクスポージャー | リスク合計 > 6.0%    | MONITOR_ONLY                        |
+| ポジション数       | ≥ 5                 | MONITOR_ONLY                        |
+| USD集中            | USD絡み ≥ 5         | 新規エントリー拒否                  |
+| JPY集中            | JPY絡み ≥ 3         | 新規エントリー拒否                  |
 | DEAD_ZONEブロック  | XMT 22:00-23:59      | 新規エントリー強制拒否              |
 | 金曜カットオフ     | 金曜 XMT 20:00以降   | 新規エントリー全拒否(FRIDAY_CUTOFF) |
 | 週末前強制決済     | 金曜 XMT 22:00       | 全ポジ成行決済                      |
@@ -1442,26 +1608,57 @@ async def supplement_technical_data(payload: WebhookPayload) -> WebhookPayload:
 
 ### 7.9 `ai/prompt_builder.py` — プロンプト構築
 
-**責務**: エントリー評価・H1監視の両プロンプトを構築する。
+**責務**: 全AI呼び出しのプロンプトを構築する。Prefix Caching最適化のための3層構造を採用。
 
-**エントリー評価プロンプト（GPT-4o用）:**
+**Prefix Caching 3層構造:**
 
 ```
-[SYSTEM]
-あなたはプロのFXトレーダーの思考を持つトレード判断AIです。
-提供されるテクニカルデータ・市場コンテキストを分析し、
-厳格なJSON形式のみで回答してください。前置き・説明不要。
+Layer 1: Static（変更禁止）  → システムプロンプト本体（キャッシュ保証）
+Layer 2: Semi-Static          → 口座状況・MTFデータ（数時間変化なし → キャッシュ期待）
+Layer 3: Dynamic              → Webhookデータ・ポジション情報（毎回変化）
+```
 
-判断基準:
-- テクニカル・ファンダメンタルズの整合性が取れている場合のみAPPROVE
-- ai_confidence < 0.6 は必ずREJECT
-- 重要指標30分以内はWAIT
-- DEAD_ZONEセッション（XMT 22:00-23:59）はREJECT（システムで自動拒否）
-- 金曜XMT 20:00以降はREJECT（週末前カットオフ・システムで自動拒否）
-- 市場クローズまで4時間未満の場合は、短期TP設定を推奨
-- 相関アラートがある場合は risk_multiplier を下げること
+> Layer 1 を固定することで、OpenAI の Prefix Caching が最大限活用される。
+> 同一 input prefix のトークンは cached_input 料金（通常の1/10）で処理される。
 
-出力JSON:
+**システムプロンプト一覧（6種）:**
+
+| # | 定数名 | 用途 | モデル |
+|---|--------|------|--------|
+| 1 | `ENTRY_SYSTEM_PROMPT` | エントリー評価（取引ルール10項目・JSONスキーマ・MTF分析指針含む） | GPT-5.2 |
+| 2 | `H1_SYSTEM_PROMPT` | H1バッチポジション監視 | GPT-5.2 |
+| 3 | `WAIT_RECHECK_SYSTEM_PROMPT` | WAIT再評価（APPROVE/REJECTの二択） | GPT-5-nano |
+| 4 | `EMERGENCY_SYSTEM_PROMPT` | 緊急判定（ALERT_HUMAN/CONTINUE_MONITORING） | GPT-5-mini |
+| 5 | `NANO_TRIAGE_SYSTEM_PROMPT` | nano一次審査（alert: true/false） | GPT-5-nano |
+| 6 | `SINGLE_POSITION_EVAL_SYSTEM_PROMPT` | 単一ポジション精密評価（HOLD/UPDATE_TP/PARTIAL_CLOSE/FULL_CLOSE） | GPT-5.2 |
+
+**ビルダーメソッド一覧（6種）:**
+
+| メソッド | 引数 | 返すmessages |
+|---------|------|-------------|
+| `build_entry_prompt(webhook, account, session, events, correlation, mtf_data)` | 3層構築 | 3メッセージ |
+| `build_wait_recheck_prompt(original_signal, current_price, mtf_data)` | 2層構築 | 2メッセージ |
+| `build_h1_batch_prompt(positions, session, news)` | 3層構築 | 3メッセージ |
+| `build_emergency_prompt(trigger, position, thesis)` | 2層構築 | 2メッセージ |
+| `build_nano_triage_prompt(trigger, position)` | 2層構築 | 2メッセージ |
+| `build_single_position_eval_prompt(position, thesis, market_context)` | 2層構築 | 2メッセージ |
+
+**エントリー評価プロンプト（GPT-5.2用・Layer 1抜粋）:**
+
+エントリー評価のシステムプロンプトには以下の取引ルール10項目が含まれる:
+1. テクニカル・ファンダメンタルズ整合性チェック
+2. confidence < 0.6 → REJECT
+3. 重要指標30分以内 → WAIT
+4. DEAD_ZONE → REJECT
+5. 金曜20:00以降 → REJECT
+6. 市場クローズ4時間未満 → 短期TP推奨
+7. 相関アラート → risk_multiplier調整
+8. MTF分析（H4/Daily）のトレンド整合性チェック
+9. invalidation_conditions 3件必須
+10. JSONスキーマ厳守
+
+出力JSONスキーマ:
+```json
 {
   "decision": "APPROVE|REJECT|WAIT",
   "confidence": 0.0〜1.0,
@@ -1473,83 +1670,49 @@ async def supplement_technical_data(payload: WebhookPayload) -> WebhookPayload:
   "market_regime": "TRENDING|RANGING|HIGH_VOLATILITY|PRE_EVENT",
   "reject_reason": "文字列またはnull"
 }
-
-[USER]
-テクニカルシグナル: {webhook_data}
-現在値: {price}
-セッション(XMT): {session}
-H1トレンド: {h1_trend}
-口座状況: 総エクスポージャー {exposure_pct}% / 保有ポジ {pos_count}件
-相関アラート: {correlation_alert}
-今日の重要指標: {todays_events}
 ```
 
-**H1バッチ監視プロンプト（GPT-4o用）:**
+**WAIT再評価プロンプト（GPT-5-nano用）:**
 
+WAIT判定後5分後の再評価に特化。APPROVE/REJECTの二択のみ（WAITは出さない）。
+新しいTP/SLを提案可能。
+
+```json
+{"decision": "APPROVE|REJECT", "confidence": 0.0〜1.0,
+ "initial_tp": 数値, "emergency_sl": 数値, "reject_reason": "文字列またはnull"}
 ```
-[SYSTEM]
-あなたはポジション管理専門のAIです。
-エントリー時のThesis（根拠）と現在状況を比較し、
-各ポジションへの指示をJSON形式のみで返してください。
 
-判断の優先順位:
-1. Invalidation Conditionsに抵触していないか（最優先）
-2. 価格アクションがThesisを支持しているか
-3. TP更新・分割決済の余地があるか
+**nano一次審査プロンプト（GPT-5-nano用）:**
 
-出力JSON:
+Layer 2 Step 1の低コストトリアージ。「AIで精密評価すべきか」だけを判断。
+
+```json
+{"alert": true|false, "reason": "理由50字以内"}
+```
+
+**単一ポジション精密評価プロンプト（GPT-5.2用）:**
+
+Layer 2 Step 2の精密AI評価。単一ポジションに対するアクション指示を返す。
+
+```json
 {
-  "positions": [
-    {
-      "trade_id": "ID",
-      "thesis_status": "VALID|WEAKENING|BROKEN",
-      "action": "HOLD|UPDATE_TP|PARTIAL_CLOSE|FULL_CLOSE",
-      "new_tp": 数値またはnull,
-      "close_percentage": 0|50|100,
-      "reasoning": "判断理由100字程度",
-      "urgency": "NORMAL|HIGH"
-    }
-  ]
+  "trade_id": "ID",
+  "thesis_status": "VALID|WEAKENING|BROKEN",
+  "action": "HOLD|UPDATE_TP|PARTIAL_CLOSE|FULL_CLOSE",
+  "new_tp": 数値またはnull,
+  "close_percentage": 0|50|100,
+  "reasoning": "判断理由100字程度",
+  "urgency": "NORMAL|HIGH"
 }
-
-[USER]
-共通コンテキスト:
-  セッション(XMT): {session}
-  重要ニュース: {major_news}
-  ボラティリティ: {volatility_regime}
-
-査定対象ポジション:
-{positions_list}
-  ※各ポジション: trade_id / symbol / direction / thesis要約(150字) /
-    invalidation_conditions / pnl_pips / 保有時間 / 現在TP
-```
-
-**緊急判定プロンプト（GPT-4o-mini用）:**
-
-```
-[SYSTEM]
-FXポジション緊急判定AIです。
-「今すぐ人間に通知すべきか」だけを判断してください。
-JSONのみで回答。
-
-出力JSON:
-{
-  "action": "ALERT_HUMAN|CONTINUE_MONITORING",
-  "reason": "理由50字以内"
-}
-
-[USER]
-トリガー理由: {trigger_reason}
-ポジション: {symbol} {direction} PnL:{pnl_pips}pips
-Thesis概要: {thesis_summary}
-Invalidation: {invalidation_conditions}
 ```
 
 **トークン最適化:**
 
+- 3層構造でPrefix Cachingを最大活用（cached_input料金は通常の1/10）
 - H1バッチは共通コンテキストを1回だけ記述（重複排除）
 - thesis_textは先頭150文字のみ渡す（DBには全文保存）
 - api_cost_logに毎回記録してコストを可視化
+- MTFデータはSemi-Static層に配置（数時間変化しないためキャッシュ対象）
 
 ---
 
@@ -1562,34 +1725,62 @@ Invalidation: {invalidation_conditions}
 1. RiskGuardianで事前ガードチェック → NG は即リターン
 2. 相関アラートチェック → alert情報をAIプロンプトに注入
 3. EconomicCalendarで指標チェック → 30分以内ならWAIT
-4. GPT-4o呼び出し（tools: web_search付き）
-5. レスポンスバリデーション + セマンティックバリデーション
-6. AI監査ログ記録（ai_audit_log）
-7. APPROVE なら LotCalculator でロット計算 → verify_calculation
-8. MT5で注文執行
-9. ThesisDBに保存
-10. Discord通知
+4. MTFデータ取得（H4/Daily）→ プロンプトに注入
+5. GPT-5.2呼び出し（Responses API・tools: web_search_preview付き）
+6. レスポンスバリデーション + セマンティックバリデーション
+7. AI監査ログ記録（ai_audit_log）
+8. APPROVE なら LotCalculator でロット計算 → verify_calculation
+9. MT5で注文執行
+10. ThesisDBに保存
+11. Discord通知
 
-**WAITハンドリング（コスト最適化設計）:**
-
-> WAIT判定を受けた場合、AIを再呼び出しするとコストが倍増する。
-> 代わりに「条件付きキャッシュ」方式で再利用する。
+**Responses API呼び出し構造:**
 
 ```python
-# WAIT判定時のフロー
+# Chat Completions API ではなく Responses API を使用
+response = await asyncio.wait_for(
+    self._client.responses.create(
+        model=CONFIG.MODEL_MAIN,
+        input=messages,              # ← messages= ではなく input=
+        tools=[{
+            "type": CONFIG.WEB_SEARCH_TOOL_TYPE,  # "web_search_preview"
+            "search_context_size": CONFIG.WEB_SEARCH_CONTEXT_SIZE,  # "low"
+        }],
+        reasoning={"effort": CONFIG.AI_REASONING_EFFORT_MAIN},  # "medium"
+    ),
+    timeout=CONFIG.AI_TIMEOUT_MAIN_SEC + CONFIG.WEB_SEARCH_TIMEOUT_SEC,
+)
+
+# レスポンス解析（reasoning itemはcontent=Noneなので必ずフィルタ）
+for item in response.output:
+    if item.type == "message":
+        text = item.content[0].text  # ← ここにJSON出力
+```
+
+> **重要**: Responses API の `output` には `reasoning` アイテム（`content=None`）と
+> `message` アイテムが含まれる。`reasoning` アイテムの `content` をイテレートすると
+> `TypeError` になるため、必ず `item.type == "message"` でフィルタすること。
+
+**WAITハンドリング（gpt-5-nano AI再評価設計）:**
+
+> WAIT判定を受けた場合、単純なガード条件再チェックではなく、
+> gpt-5-nanoで軽量AI再評価を行う。APPROVE/REJECTの二択で判断し、
+> 新しいTP/SLも提案可能。
+
+```python
 WAIT_TTL_MINUTES: int = 15        # WAITの有効期限（M15足1本分）
-WAIT_MAX_RETRIES: int = 2         # 最大再評価回数
+WAIT_MAX_RETRIES: int = 2         # 最大再チェック回数
 WAIT_RECHECK_INTERVAL_SEC: int = 300  # 再チェック間隔（5分）
+WAIT_RECHECK_MODEL: str = "gpt-5-nano"  # 再評価モデル
+WAIT_RECHECK_REASONING_EFFORT: str = "low"  # 推論量
 
-_wait_queue: dict[str, dict] = {}   # symbol -> {ai_response, webhook_data, created_at, retry_count}
+_wait_queue: dict[str, dict] = {}  # symbol -> {ai_response, webhook_data, ...}
 
-async def handle_wait_decision(symbol: str, ai_response: dict, webhook_data: dict):
+async def handle_wait_decision(symbol, ai_response, webhook_data):
     """
     WAIT判定時の処理:
     1. AIレスポンスをキャッシュ（15分TTL）
-    2. 5分後にブロック条件（指標等）が解除されたか再チェック
-    3. 解除されていれば、元のAI判定を「AIを呼び直さず」にそのまま使用
-    4. 解除されていなければ破棄（Discord通知）
+    2. 5分後に_recheck_wait()をスケジュール
     """
     _wait_queue[symbol] = {
         "ai_response": ai_response,
@@ -1597,51 +1788,25 @@ async def handle_wait_decision(symbol: str, ai_response: dict, webhook_data: dic
         "created_at": BrokerTime.now(),
         "retry_count": 0,
     }
-    await notifier.send(
-        f"⏳ WAIT: {symbol} - {ai_response.get('reject_reason', '条件未達')}",
-        level="INFO"
-    )
-    # 5分後に再チェックをスケジュール
-    scheduler.add_job(
-        recheck_wait, "date",
-        run_date=BrokerTime.now() + timedelta(seconds=WAIT_RECHECK_INTERVAL_SEC),
-        args=[symbol],
-        id=f"wait_recheck_{symbol}",
-        replace_existing=True,
-    )
+    # スケジューラーに5分後のジョブを登録
 
-async def recheck_wait(symbol: str):
-    """WAIT中のシグナルを再チェック（AI再呼び出しなし）"""
-    entry = _wait_queue.get(symbol)
-    if not entry:
-        return
-    elapsed = (BrokerTime.now() - entry["created_at"]).total_seconds()
-    if elapsed > WAIT_TTL_MINUTES * 60:
-        del _wait_queue[symbol]
-        await notifier.send(f"⏳ WAIT期限切れ: {symbol}（{WAIT_TTL_MINUTES}分超過）", level="INFO")
-        return
-
-    # ブロック条件だけ再チェック（AI呼び出しなし）
-    can_enter, reason = guardian.can_enter_new_trade(
-        symbol, entry["webhook_data"]["direction"]
-    )
-    event_soon, _ = calendar.is_high_impact_event_soon()
-
-    if can_enter and not event_soon:
-        # ブロック解除 → 元のAI判定でエントリー実行
-        logger.info(f"WAIT解除: {symbol} → 元のAI判定でエントリー実行")
-        await execute_entry(symbol, entry["ai_response"], entry["webhook_data"])
-        del _wait_queue[symbol]
-    else:
-        entry["retry_count"] += 1
-        if entry["retry_count"] >= WAIT_MAX_RETRIES:
-            del _wait_queue[symbol]
-            await notifier.send(f"⏳ WAIT最終破棄: {symbol}（再チェック{WAIT_MAX_RETRIES}回超過）", level="INFO")
-        # 次回再チェックをスケジュール
+async def _recheck_wait(symbol: str):
+    """
+    WAIT再評価フロー:
+    1. TTL超過チェック → 超過なら破棄
+    2. ガード条件チェック（can_enter + 経済指標）→ 未解除ならリトライ
+    3. 現在価格取得 + MTFデータ取得
+    4. gpt-5-nano で再評価（build_wait_recheck_prompt）
+       - APPROVE → 新TP/SLで_execute_entry()
+       - REJECT → 破棄 + Discord通知
+       - AI失敗 → retry_count++ → 最大2回で最終破棄
+    """
 ```
 
-> **コスト効果**: AI再呼び出し0回。WAIT→APPROVE転換時のコストは$0。
-> 15分超過時は市場状況が変化している可能性が高いため、安全に破棄する。
+> **コスト効果**: gpt-5-nanoのコストは$0.05/1M input + $0.4/1M output。
+> WAIT再評価1回あたり約$0.0001（≒0.015円）で、事実上無料。
+> 元のWAIT応答をキャッシュ不使用に変更し、最新価格・MTFデータで
+> AI再判断することで、精度とコストのバランスを最適化している。
 
 **部分操作失敗リカバリー（AI承認〜MT5注文の途中失敗）:**
 
@@ -1708,79 +1873,48 @@ async def execute_entry(symbol: str, ai_response: dict, webhook_data: dict):
 **web_search フォールバック設計:**
 
 ```python
-# OpenAI web_search toolsが失敗した場合の処理
-# web_searchはAI側で自律的に呼ばれるため、Python側で直接制御できない。
-# 代わりに以下のフォールバック設計を行う。
+# OpenAI Responses APIのtoolsにweb_search_previewを追加
+WEB_SEARCH_TIMEOUT_SEC: int = 10  # web_search含む追加タイムアウト
 
-WEB_SEARCH_TIMEOUT_SEC: int = 10  # web_search含む全体タイムアウト
-
-async def call_entry_evaluation(webhook_data: dict, context: dict) -> dict:
+async def call_entry_evaluation(webhook_data, context):
     """
-    エントリー評価AI呼び出し（web_searchフォールバック付き）
+    エントリー評価AI呼び出し（3段フォールバック）
     
     フォールバック戦略:
-    1. web_search有効で呼び出し（通常パス）
-    2. タイムアウト or web_search関連エラー
-       → web_searchなしでリトライ（ニュースなしで判断）
-    3. それでも失敗 → GPT-4o-miniにフォールバック
+    1. GPT-5.2 + web_search_preview（通常パス）
+    2. GPT-5.2 web_searchなし（ニュースなしで判断）
+    3. GPT-5-mini フォールバック
     4. 全失敗 → REJECT（安全側に倒す）
     """
-    # 試行1: web_search付き
+    # 試行1: GPT-5.2 + web_search_preview
     try:
         response = await asyncio.wait_for(
-            call_ai_with_retry(
-                CONFIG.MODEL_MAIN, messages,
-                tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            self._client.responses.create(
+                model=CONFIG.MODEL_MAIN,
+                input=messages,
+                tools=[{
+                    "type": CONFIG.WEB_SEARCH_TOOL_TYPE,
+                    "search_context_size": CONFIG.WEB_SEARCH_CONTEXT_SIZE,
+                }],
+                reasoning={"effort": CONFIG.AI_REASONING_EFFORT_MAIN},
             ),
-            timeout=CONFIG.AI_TIMEOUT_MAIN_SEC + WEB_SEARCH_TIMEOUT_SEC
+            timeout=CONFIG.AI_TIMEOUT_MAIN_SEC + CONFIG.WEB_SEARCH_TIMEOUT_SEC
         )
-        if response:
-            return parse_ai_response(response)
     except asyncio.TimeoutError:
         logger.warning("web_search付きAI呼び出しタイムアウト")
 
-    # 試行2: web_searchなし（ニュース情報なしで判断）
-    try:
-        response = await asyncio.wait_for(
-            call_ai_with_retry(CONFIG.MODEL_MAIN, messages),
-            timeout=CONFIG.AI_TIMEOUT_MAIN_SEC
-        )
-        if response:
-            result = parse_ai_response(response)
-            result["_web_search_failed"] = True  # 監査ログ用フラグ
-            await notifier.send(
-                f"⚠️ web_search失敗: {webhook_data['symbol']} - ニュースなしで判断",
-                level="WARNING"
-            )
-            return result
-    except asyncio.TimeoutError:
-        pass
-
-    # 試行3: GPT-4o-mini フォールバック
-    try:
-        response = await call_ai_with_retry(CONFIG.MODEL_FAST, messages)
-        if response:
-            result = parse_ai_response(response)
-            result["_fallback_model"] = True
-            return result
-    except Exception:
-        pass
-
-    # 全失敗 → 安全側にREJECT
-    await notifier.send(
-        f"🔴 AI完全障害: {webhook_data['symbol']} エントリー拒否",
-        level="CRITICAL"
-    )
-    return {"decision": "REJECT", "reject_reason": "AI障害"}
+    # 試行2: GPT-5.2 web_searchなし
+    # 試行3: GPT-5-mini フォールバック
+    # 全失敗 → REJECT + Discord CRITICAL通知
 ```
 
 **web_search統合:**
 
 ```python
-# OpenAI APIのtoolsにweb_searchを追加するだけ
+# Responses APIのtoolsにweb_search_previewを追加
 tools = [{
-    "type": "web_search_20250305",
-    "name": "web_search"
+    "type": "web_search_preview",
+    "search_context_size": "low",  # コスト抑制
 }]
 # AIが自分で "{symbol} latest forex news" などを検索してThesisに組み込む
 ```
@@ -1789,13 +1923,13 @@ tools = [{
 
 ### 7.11 `ai/position_monitor.py` — ポジション監視
 
-**責務**: H1バッチ処理・価格近接チェック・フォールバック制御。
+**責務**: H1バッチ処理・2階層価格近接チェック（nano→GPT-5.2）・フォールバック制御。
 
 **H1バッチ処理（毎時01分）:**
 
 - MT5の全ポジションとThesisDBを結合
 - 共通コンテキスト（セッション・ニュース・ボラ）を一度だけ構築
-- GPT-4oへ一括送信
+- GPT-5.2へ一括送信
 - レスポンス各項目をバリデーション後に実行
 - AI監査ログに記録（ai_audit_log）
 - 全結果をreview_logに保存
@@ -1843,32 +1977,59 @@ async def run_h1_batch_review():
         await notifier.send_h1_summary(results_summary)
 ```
 
-**価格近接チェック（60秒ごと・Layer 1）:**
+**価格近接チェック（60秒ごと・Layer 1 → Layer 2）:**
 
 ```python
-# ルールベースのトリップワイヤー（AIなし）
+# Layer 1: ルールベースのトリップワイヤー（AIなし）
 for position in positions:
     tp_distance = abs(position.tp - current_price)
     sl_distance = abs(position.sl - current_price)
   
     # TP/SLの80%地点に到達
     if tp_distance < (initial_tp_distance * 0.2):
-        trigger_layer2(position, "TP近接80%")
+        await _trigger_layer2(position, "TP近接80%")
   
     # 急激な逆行（ATR×2以上の1本足）
     if sudden_reversal_detected(position):
-        trigger_layer2(position, "急激な逆行検知")
+        await _trigger_layer2(position, "急激な逆行検知")
+
+# Layer 2: 2階層AI評価
+async def _trigger_layer2(position, trigger_reason):
+    """
+    Step 1: GPT-5-nano 一次審査（_call_nano_triage）
+      - {"alert": true/false, "reason": "..."}
+      - alert=false → スルー（コストほぼゼロ: ~$0.00003/回）
+      - alert=true → Step 2へ
+      - AI失敗 → 安全側にalert=trueとして扱う
+
+    Step 2: GPT-5.2 精密評価（_call_deep_eval）
+      - HOLD → ログのみ
+      - UPDATE_TP / PARTIAL_CLOSE / FULL_CLOSE → MT5で自動実行 + Discord通知
+      - AI失敗 → Discord CRITICAL（手動確認依頼）
+    """
+```
+
+> **2階層設計の利点:**
+> - Layer 1トリガー → 即GPT-5.2だとコスト過大（月$50+）
+> - nano一次審査で90%+をフィルタ → GPT-5.2呼び出しを月数回に抑制
+> - 月間Layer 2コスト約$4-5（内訳: nano ~$0.05 + GPT-5.2 ~$4）
 ```
 
 **フォールバック実装:**
 
 ```
-試行1: GPT-4o（timeout=20秒）
-試行2: GPT-4o-mini（timeout=15秒）
+【H1バッチ】
+試行1: GPT-5.2（timeout=90秒, reasoning_effort=medium）
+試行2: GPT-5-mini（timeout=30秒, reasoning_effort=low）
 試行3: ルールベース
   → 全ポジHOLD
   → 新規エントリー停止（MONITOR_ONLYに変更）
   → Discord警告通知（"AI障害: ルールベースで運用中"）
+
+【価格近接精密評価（Layer 2 Step 2）】
+試行1: GPT-5.2（timeout=90秒）
+試行2: GPT-5-mini（timeout=30秒）
+試行3: None → Discord CRITICAL通知（手動確認依頼）
 ```
 
 ---
@@ -1892,9 +2053,9 @@ for position in positions:
 🟢 新規エントリー承認
 ━━━━━━━━━━━━━━━━━━━━
 📊 USDJPY LONG  |  0.03lot
-💰 リスク: 1,500円 (1.0%)
+💰 リスク: 3,000円 (2.0%)
 🎯 TP: 150.20  |  🛡 SL: 148.80
-🤖 GPT-4o  信頼度: 82%  |  TRENDING
+🤖 GPT-5.2  信頼度: 82%  |  TRENDING
 📝 Thesis: ドル高期待のH1ブレイクアウト。
    EMA21>EMA50、RSI58で過熱なし...
 ⚠️ 無効化条件:
@@ -1932,13 +2093,39 @@ for position in positions:
 
 - 通知失敗時はログのみでシステムを止めない
 - リクエストはタイムアウト5秒に設定
-- 同じ内容の連続通知を30秒以内に送らない（重複防止）
+- 同じ内容の連続通知をMD5ハッシュで30秒以内に送らない（重複抑制）
+- **バッチ処理**: INFO/WARNING通知は2秒バッファ（`BATCH_WINDOW_SEC=2.0`）でまとめ送信
+- **CRITICAL通知は即時送信**（バッファをバイパス）
+- 同一 `level + title` の通知をグループ化して1つのEmbedに結合
+- Embed上限4096文字、4000文字で切り詰め
+- `close()` 時にバッファ残留通知をフラッシュ
 
 ---
 
 ### 7.13 `main.py` — エントリーポイント
 
 **責務**: 全コンポーネントの初期化・FastAPI起動・スケジューラー管理。
+
+**FastAPI Lifespan（コンテキストマネージャー方式）:**
+
+```python
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    \"\"\"FastAPI起動・終了時の処理\"\"\"
+    # 起動
+    wire_dependencies()
+    await notifier.start()
+    await calendar.start()
+    await thesis_db.start()
+    if not await startup_checks():
+        sys.exit(1)
+    scheduler.start()
+    yield
+    # 終了
+    await graceful_shutdown()
+
+app = FastAPI(title="AI Trading System", lifespan=lifespan)
+```
 
 **APSchedulerのタイムゾーン設定（最重要）:**
 
@@ -1965,7 +2152,7 @@ scheduler = AsyncIOScheduler(timezone=XMT_TIMEZONE)
 # ↑ これで全cronジョブの hour/minute/day_of_week が XMT時間で評価される
 # ↑ day_of_week="fri" は XMTの金曜日に発火する（システムの金曜日ではない）
 
-# スケジューラー設定（全時刻はXMT時間）
+# スケジューラー設定（全時刻はXMT時間・計10ジョブ）
 scheduler.add_job(
     monitor.run_h1_batch_review,
     "cron", minute=CONFIG.H1_BATCH_CRON_MINUTE  # 毎時XMT XX:01
@@ -1977,6 +2164,10 @@ scheduler.add_job(
 scheduler.add_job(
     monitor.check_price_proximity,
     "interval", seconds=CONFIG.PRICE_CHECK_INTERVAL_SEC  # intervalはTZ無関係
+)
+scheduler.add_job(
+    mt5_client.sample_spreads,
+    "interval", seconds=60  # 適応型スプレッド上限の学習データ蓄積
 )
 scheduler.add_job(
     db.run_maintenance,
@@ -2246,13 +2437,19 @@ AIが返すJSONに対して以下を必ず検証すること：
 | risk_multiplier         | 0.5〜1.5の範囲内              | 1.0に丸める                |
 | invalidation_conditions | 3件存在するか                 | 空の場合はREJECT           |
 
-### temperatureとmax_tokens設定
+### reasoning_effort設定（Responses API）
 
 ```
-エントリー評価（GPT-4o）: temperature=0.2, max_tokens=800
-H1バッチ監視（GPT-4o）:   temperature=0.2, max_tokens=1000
-緊急判定（GPT-4o-mini）:  temperature=0.1, max_tokens=200
+エントリー評価（GPT-5.2）:      reasoning_effort="medium"
+H1バッチ監視（GPT-5.2）:        reasoning_effort="medium"
+WAIT再評価（GPT-5-nano）:       reasoning_effort="low"
+nano一次審査（GPT-5-nano）:     reasoning_effort="low"
+精密評価（GPT-5.2）:            reasoning_effort="medium"
+緊急判定（GPT-5-mini）:         reasoning_effort="low"
 ```
+
+> **注**: Responses API では `temperature` や `max_tokens` ではなく
+> `reasoning={"effort": "medium"}` で推論量を制御する。
 
 ### セマンティックバリデーション（方向整合性チェック）
 
@@ -2368,7 +2565,7 @@ Level 1 [即時・物理]: MT5上の物理SL
   → AI障害・Python障害に関係なく常に有効
 
 Level 2 [30秒]: サーキットブレーカー
-  → 日次DD 3%超で全決済・LOCKED
+  → 日次DD 6%超で全決済・LOCKED
 
 Level 3 [60秒]: 総エクスポージャー・ポジション数
   → MONITOR_ONLYに移行（既存ポジは管理継続）
@@ -2430,7 +2627,7 @@ GOLD:    現在値から最大 300pips ($3.00) 以内
 │  └─ Discord通知: "週末前エントリー停止"              │
 │                                                     │
 │  金曜 XMT 22:00  全ポジション強制決済                │
-│  ├─ GPT-4oに最終査定リクエスト                      │
+│  ├─ GPT-5.2に最終査定リクエスト                      │
 │  │   └─ 各ポジの推奨（即時決済 or TPトレール）       │
 │  ├─ AI推奨に関わらず全ポジ成行決済を実行             │
 │  ├─ trade_historyにexit_reason="WEEKEND_CLOSE"記録  │
@@ -2697,10 +2894,9 @@ AI_RETRY_BACKOFF_SEC: list = [2, 5, 10]
 async def call_ai_with_retry(model, messages, **kwargs):
     for attempt, wait in enumerate(AI_RETRY_BACKOFF_SEC):
         try:
-            response = await openai_client.chat.completions.create(
+            response = await openai_client.responses.create(
                 model=model,
-                messages=messages,
-                response_format={"type": "json_object"},  # JSON mode強制
+                input=messages,
                 **kwargs
             )
             return response
@@ -2713,8 +2909,8 @@ async def call_ai_with_retry(model, messages, **kwargs):
     return None  # 全リトライ失敗 → フォールバックへ
 ```
 
-> **重要**: `response_format={"type": "json_object"}` を全AI呼び出しで使用し、
-> JSON解析の不確実性を排除する。
+> **重要**: Responses API ではシステムプロンプトで「必ずJSONで返せ」と指示し、
+> 応答テキストを `json.loads()` でパースする。`response_format` パラメータは使用しない。
 
 ### グレースフルシャットダウン
 
@@ -3027,7 +3223,7 @@ def validate_config():
 │  Step 2: 各シグナルに対してAI評価を実行                 │
 │  ├─ mt5.copy_rates_range()でH1/M15足を取得            │
 │  ├─ その時点の市場コンテキストを構築                    │
-│  ├─ GPT-4o-mini（コスト削減）でエントリー評価          │
+│  ├─ GPT-5-mini（コスト削減）でエントリー評価          │
 │  │   └─ web_searchは無効化（過去のニュースは取得不可） │
 │  └─ AI判定: APPROVE / REJECT / WAIT                   │
 │                                                        │
@@ -3059,7 +3255,7 @@ class BacktestConfig:
     end_date: str = "2024-12-31"
 
     # AIモデル（コスト削減のためminiを使用）
-    model: str = "gpt-4o-mini"
+    model: str = "gpt-5-mini"
 
     # web_searchは無効化（過去のニュース取得不可）
     enable_web_search: bool = False
@@ -3101,35 +3297,27 @@ class BacktestConfig:
 
 ```
 ┌────────────────────────────────────────────────────────┐
-│  Level 1: ユニットテスト（pytest・必須・自動実行）      │
+│  Level 1: ユニットテスト（pytest・必須）                │
 │                                                        │
-│  ・lot_calculator.py → 各銘柄のロット計算正確性        │
-│  ・broker_time.py    → 冬/夏時間変換・セッション判定   │
-│  ・risk_guardian.py   → CB発動閾値・ガード条件判定     │
-│  ・セマンティックバリデーション → 方向矛盾検知          │
-│  ・相関アラート     → グループ検知ロジック             │
+│  tests/test_core.py に全55テスト・8クラスを統合:       │
 │                                                        │
-│  → 起動時に自動実行。失敗したら起動中止。              │
+│  ・TestBrokerTime (9)   → 冬/夏時間変換・セッション    │
+│  ・TestModels (7)       → Pydantic モデル検証          │
+│  ・TestRiskGuardian (4) → CB発動・ガード条件判定       │
+│  ・TestWebhookReceiver (7) → Webhook認証・重複排除     │
+│  ・TestPromptBuilder (10) → 6種プロンプト生成          │
+│  ・TestSemanticValidator (6) → 方向矛盾・TP/SL検知    │
+│  ・TestThesisDB (4)     → DB保存・パージ・ACTIVE保護   │
+│  ・TestSpreadTracker (8) → p95計算・適応的制限          │
+│                                                        │
+│  → デプロイ前に `pytest tests/` で実行。               │
 ├────────────────────────────────────────────────────────┤
-│  Level 2: モック統合テスト（AIレスポンスを固定値で検証） │
-│                                                        │
-│  ・entry_evaluator.py にモックAIレスポンスを注入        │
-│  ・「AI→APPROVE→ロット計算→MT5注文→DB保存→Discord」    │
-│    の一連フローが通ることを確認                         │
-│  ・異常系テスト:                                       │
-│    - AI→APPROVE だがconfidence=0.3 → REJECT上書き     │
-│    - AI→APPROVE だがTP方向矛盾 → REJECT上書き         │
-│    - MT5注文失敗 → Discord CRITICAL通知                │
-│    - DB保存失敗 → Discord CRITICAL通知                 │
-│                                                        │
-│  → デプロイ前に手動実行。                              │
-├────────────────────────────────────────────────────────┤
-│  Level 3: デモ口座実地テスト（実運用と同一コード）      │
+│  Level 2: デモ口座実地テスト（実運用と同一コード）      │
 │                                                        │
 │  ・IS_DEMO_MODE=True でデモ口座に接続                  │
 │  ・実際のWebhookシグナルでフルパイプラインを実行        │
-│  ・最低30トレード収集してから本番移行                   │
-│  ・週末クローズ・週明けオープンを最低2サイクル確認      │
+│  ・AI APPROVE率が30-70%の範囲を確認                    │
+│  ・週末クローズ・週明けオープンの正常動作確認           │
 │  ・CB（サーキットブレーカー）を意図的に発動テスト       │
 │  ・グレースフルシャットダウン → 再起動の動作確認        │
 │                                                        │
@@ -3137,52 +3325,15 @@ class BacktestConfig:
 └────────────────────────────────────────────────────────┘
 ```
 
-### モックAIレスポンスの設計
-
-```python
-# tests/mock_ai.py
-MOCK_RESPONSES = {
-    "approve_normal": {
-        "decision": "APPROVE", "confidence": 0.82,
-        "thesis": "テスト用Thesis: EMA21>EMA50でトレンド継続...",
-        "invalidation_conditions": ["149.00下抜け", "FOMC反転", "ゴールド急騰"],
-        "initial_tp": 150.50, "emergency_sl": 148.80,
-        "risk_multiplier": 1.0, "market_regime": "TRENDING",
-        "reject_reason": None
-    },
-    "approve_low_confidence": {
-        "decision": "APPROVE", "confidence": 0.3,  # バリデーションでREJECTされるべき
-        ...
-    },
-    "approve_wrong_direction": {
-        "decision": "APPROVE", "confidence": 0.85,
-        "thesis": "下落トレンドが継続...",  # LONGシグナルに対して矛盾
-        "initial_tp": 148.00,  # LONGなのにTP<現在値
-        ...
-    },
-}
-
-class MockAIClient:
-    """テスト用AIクライアント（OpenAI APIを呼ばない）"""
-    def __init__(self, scenario: str = "approve_normal"):
-        self.scenario = scenario
-        self.call_count = 0
-
-    async def chat_completions_create(self, **kwargs):
-        self.call_count += 1
-        return MockResponse(MOCK_RESPONSES[self.scenario])
-```
-
 ### デモ運用チェックリスト（本番移行判定基準）
 
 ```
-□ ユニットテスト全パス（lot_calculator / broker_time / risk_guardian）
-□ モック統合テスト全パス（正常系 + 異常系5パターン以上）
-□ デモで30トレード以上の実績
+□ ユニットテスト全55パス（pytest tests/test_core.py）
+□ デモで十分なトレード実績
 □ AI APPROVE率が30-70%の範囲（偏りすぎは設定ミス疑い）
 □ セマンティックバリデーション発動が0件（AIが安定している）
-□ 週末クローズ・週明けオープン 2サイクル正常動作
-□ CB発動テスト（日次DD 3%超で全決済+LOCKED確認）
+□ 週末クローズ・週明けオープン正常動作
+□ CB発動テスト（日次DD 6%超で全決済+LOCKED確認）
 □ MT5切断→再接続テスト（VPS再起動）
 □ マルチインスタンス防止テスト（2重起動でエラー確認）
 □ グレースフルシャットダウン→再起動→リカバリー確認
@@ -3246,34 +3397,41 @@ Step 22: 継続的なプロンプトチューニング
 
 ## 19. コスト試算
 
-### OpenAI APIコスト（月間・デモ運用時）
+### OpenAI APIコスト（月間）
 
 ```
-【GPT-4o 料金基準】
-Input:  $2.50 / 1M tokens
-Output: $10.00 / 1M tokens
+【GPT-5.2 料金基準（$/1M tokens）】
+Input:        $1.75
+Cached Input: $0.175（Prefix Caching適用時）
+Output:       $14.00
 
-【GPT-4o-mini 料金基準】
-Input:  $0.15 / 1M tokens
-Output: $0.60 / 1M tokens
+【GPT-5-mini 料金基準】
+Input: $0.25 / Cached: $0.025 / Output: $2.00
+
+【GPT-5-nano 料金基準】
+Input: $0.05 / Cached: $0.005 / Output: $0.40
 
 【月間使用量試算（3銘柄・H1監視）】
-エントリー評価（GPT-4o）: 月30回 × 1,000tokens = 30K tokens
-H1バッチ（GPT-4o）:       月720回 × 1,200tokens = 864K tokens
-緊急判定（GPT-4o-mini）:  月60回  × 300tokens  = 18K tokens
+エントリー評価（GPT-5.2）:    月30回 × ~1,500tokens = 45K tokens
+H1バッチ監視（GPT-5.2）:      月720回 × ~1,200tokens = 864K tokens
+WAIT再評価（GPT-5-nano）:     月15回 × ~500tokens   = 7.5K tokens
+nano一次審査（GPT-5-nano）:   月2,880回 × ~400tokens = 1,152K tokens
+精密評価（GPT-5.2）:           月288回 × ~1,000tokens = 288K tokens
+緊急判定（GPT-5-mini）:       月60回  × ~300tokens   = 18K tokens
 
-月間コスト概算: $3〜6
+月間コスト概算: $5〜12
+※ Prefix Caching（3-layer構造）により入力コスト約90%削減
 ```
 
 ### システム全体コスト（月間）
 
 | 項目           | 費用                                  |
 | -------------- | ------------------------------------- |
-| OpenAI API     | $3〜6                                 |
+| OpenAI API     | $5〜12                                |
 | Windows VPS    | $10〜20                               |
 | TradingView    | 無料〜$15                             |
 | Forex Factory  | 無料                                  |
-| **合計** | **$13〜41（約2,000〜6,000円）** |
+| **合計** | **$15〜47（約2,300〜7,000円）** |
 
 ---
 
@@ -3283,16 +3441,14 @@ H1バッチ（GPT-4o）:       月720回 × 1,200tokens = 864K tokens
 fastapi>=0.110.0
 uvicorn>=0.27.0
 MetaTrader5>=5.0.45
-openai>=1.30.0
+openai>=1.76.0
 apscheduler>=3.10.4
 python-dotenv>=1.0.0
 httpx>=0.27.0
-pandas>=2.2.0
-aiohttp>=3.9.0
 aiosqlite>=0.20.0
 pydantic>=2.6.0
 ```
 
 ---
 
-*本設計書はClaude Sonnet 4.6との討論に基づき作成（v5.0改訂: Claude Opus 4.6）。実装はClaude Opus（VSCode Agent）を使用すること。*
+*本設計書はClaude Sonnet 4.6との討論に基づき作成。実装・改訂はClaude Opus 4.6（VSCode Agent）。v6.0: Responses API移行、2-tier監視、適応的スプレッド制限を反映。*
