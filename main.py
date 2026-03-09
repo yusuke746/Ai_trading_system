@@ -130,6 +130,14 @@ def setup_scheduler():
         id="price_check",
     )
 
+    # スプレッドサンプリング（60秒ごと、適応型上限の学習データ）
+    scheduler.add_job(
+        mt5_client.sample_spreads,
+        "interval",
+        seconds=60,
+        id="spread_sampling",
+    )
+
     # DBメンテナンス（XMT 00:05）
     scheduler.add_job(
         thesis_db.run_maintenance,

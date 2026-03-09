@@ -16,6 +16,7 @@ import pandas as pd
 from config import CONFIG
 from core.broker_time import BrokerTime
 from core.models import OrderResult, PositionInfo, Direction
+from core.spread_tracker import SpreadTracker
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class MT5Client:
         self._notifier = None  # 後から注入
         self.magic_number: int = 20250101
         self.deviation: int = 10  # スリッページ上限
+        self.spread_tracker: SpreadTracker = SpreadTracker()
 
     def set_notifier(self, notifier):
         """notifierの循環import回避用"""
@@ -490,6 +492,7 @@ class MT5Client:
         """
         スプレッドが許容範囲内か判定。
         tick.ask - tick.bid を symbol_info.point で割って正規化。
+        SpreadTrackerの適応型上限を使用（ウォームアップ中はconfig固定値）。
         """
         tick = mt5.symbol_info_tick(symbol)
         info = mt5.symbol_info(symbol)
@@ -500,5 +503,17 @@ class MT5Client:
         spread_price = tick.ask - tick.bid
         spread_points = spread_price / info.point if info.point > 0 else 9999.0
 
-        limit = CONFIG.SPREAD_LIMITS_POINTS.get(symbol, 50)
+        limit = self.spread_tracker.get_limit(symbol)
         return (spread_points <= limit, spread_points)
+
+    async def sample_spreads(self) -> None:
+        """全銘柄のスプレッドを記録（60秒ごとにスケジューラから呼ばれる）"""
+        async with _mt5_lock:
+            if not await self.ensure_connection():
+                return
+            for symbol in CONFIG.SYMBOLS:
+                tick = mt5.symbol_info_tick(symbol)
+                info = mt5.symbol_info(symbol)
+                if tick and info and info.point > 0:
+                    spread_pts = (tick.ask - tick.bid) / info.point
+                    self.spread_tracker.record(symbol, spread_pts)

@@ -113,11 +113,22 @@ class TradingConfig:
     DEAD_ZONE_HARD_BLOCK: bool = True
 
     # スプレッド制限（points単位）
+    # ウォームアップ時・フォールバック用の固定値
     SPREAD_LIMITS_POINTS: dict = field(default_factory=lambda: {
         "USDJPY": 30,
         "EURUSD": 25,
         "GOLD": 50,
     })
+    # 適応型スプレッド設定
+    SPREAD_HARD_MAX_POINTS: dict = field(default_factory=lambda: {
+        "USDJPY": 60,   # 異常時でもこれ以上は絶対拒否
+        "EURUSD": 50,
+        "GOLD": 100,
+    })
+    SPREAD_ADAPTIVE_PERCENTILE: float = 95.0   # p95を基準
+    SPREAD_ADAPTIVE_MULTIPLIER: float = 1.2    # p95 × 1.2
+    SPREAD_HISTORY_HOURS: int = 168             # 7日間の履歴
+    SPREAD_MIN_SAMPLES: int = 60               # ウォームアップ最小サンプル数（～1時間）
 
     # 物理SL上限（pips）
     MAX_SL_PIPS: dict = field(default_factory=lambda: {

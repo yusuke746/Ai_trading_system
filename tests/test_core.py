@@ -678,3 +678,92 @@ class TestThesisDB:
         assert "monthly_cost_usd" in stats
 
         await db.close()
+
+
+# ──────────── SpreadTracker テスト ────────────
+
+class TestSpreadTracker:
+    """適応型スプレッド上限管理のユニットテスト"""
+
+    def test_warmup_returns_fixed_fallback(self):
+        """サンプル不足時はconfig固定値を返す"""
+        from core.spread_tracker import SpreadTracker
+        tracker = SpreadTracker()
+        # サンプル0 → config固定値
+        limit = tracker.get_limit("USDJPY")
+        assert limit == 30  # CONFIG.SPREAD_LIMITS_POINTS["USDJPY"]
+
+    def test_warmup_with_few_samples(self):
+        """MIN_SAMPLES未満ではまだ固定値"""
+        from core.spread_tracker import SpreadTracker
+        tracker = SpreadTracker()
+        for i in range(30):  # 60未満
+            tracker.record("USDJPY", 15.0)
+        limit = tracker.get_limit("USDJPY")
+        assert limit == 30  # まだ固定値
+
+    def test_adaptive_after_warmup(self):
+        """MIN_SAMPLES以上で適応型に切り替わる"""
+        from core.spread_tracker import SpreadTracker
+        tracker = SpreadTracker()
+        # 100サンプル: ほとんど10pts、数個だけ20pts
+        for i in range(95):
+            tracker.record("USDJPY", 10.0)
+        for i in range(5):
+            tracker.record("USDJPY", 20.0)
+
+        limit = tracker.get_limit("USDJPY")
+        # p95 ≈ 20.0, × 1.2 = 24.0、hard_max(60)以下 → 24.0
+        assert limit != 30  # 固定値ではない
+        assert limit <= 60  # hard_max以下
+        assert limit > 10   # p95以上の値
+
+    def test_hard_max_clamp(self):
+        """異常値でもhard_maxを超えない"""
+        from core.spread_tracker import SpreadTracker
+        tracker = SpreadTracker()
+        # 全て100pts（通常ありえない高スプレッド）
+        for i in range(100):
+            tracker.record("USDJPY", 100.0)
+
+        limit = tracker.get_limit("USDJPY")
+        assert limit == 60  # hard_max: USDJPY=60
+
+    def test_stats_warmup_mode(self):
+        """ウォームアップ中のstats"""
+        from core.spread_tracker import SpreadTracker
+        tracker = SpreadTracker()
+        tracker.record("GOLD", 30.0)
+        stats = tracker.get_stats("GOLD")
+        assert stats["mode"] == "warmup"
+        assert stats["samples"] == 1
+
+    def test_stats_adaptive_mode(self):
+        """適応型完了後のstats"""
+        from core.spread_tracker import SpreadTracker
+        tracker = SpreadTracker()
+        for i in range(100):
+            tracker.record("EURUSD", 12.0 + (i % 5))
+        stats = tracker.get_stats("EURUSD")
+        assert stats["mode"] == "adaptive"
+        assert stats["samples"] == 100
+        assert "p50" in stats
+        assert "p95" in stats
+        assert "current_limit" in stats
+
+    def test_unknown_symbol_hard_max_default(self):
+        """未知銘柄はhard_maxデフォルト100でクランプ"""
+        from core.spread_tracker import SpreadTracker
+        tracker = SpreadTracker()
+        for i in range(100):
+            tracker.record("GBPJPY", 200.0)  # 極端に高い値
+        limit = tracker.get_limit("GBPJPY")
+        assert limit == 100  # hard_max default でクランプ
+
+    def test_stats_empty_symbol(self):
+        """サンプル0のstats"""
+        from core.spread_tracker import SpreadTracker
+        tracker = SpreadTracker()
+        stats = tracker.get_stats("USDJPY")
+        assert stats["mode"] == "fixed_fallback"
+        assert stats["samples"] == 0
