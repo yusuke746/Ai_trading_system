@@ -336,7 +336,7 @@ class PositionMonitor:
             logger.error(f"価格近接チェックエラー: {e}")
 
     async def _trigger_layer2(self, pos, thesis: dict, trigger_reason: str):
-        """Layer 2: 緊急AI判定（GPT-5-mini）"""
+        """Layer 2: ナノ一次審査 → gpt-5.2精密評価の2階層構成"""
         try:
             trade_id = thesis.get("trade_id", "N/A")
             point = 0.001 if "JPY" in pos.symbol else 0.00001
@@ -346,28 +346,110 @@ class PositionMonitor:
             if pos.direction == Direction.SHORT:
                 pnl_pips = -pnl_pips
 
-            messages = self._prompt_builder.build_emergency_prompt(
+            # === Step 1: gpt-5-nano 一次審査 ===
+            triage_messages = self._prompt_builder.build_nano_triage_prompt(
                 trigger_reason=trigger_reason,
                 symbol=pos.symbol,
                 direction=pos.direction.value,
+                entry_price=pos.open_price,
+                current_price=pos.current_price,
                 pnl_pips=pnl_pips,
                 thesis_summary=thesis.get("thesis_text", "")[:150],
                 invalidation_conditions=thesis.get("invalidation", []),
+                tp=thesis.get("initial_tp", pos.tp),
+                sl=thesis.get("emergency_sl", pos.sl),
             )
 
-            response = await self._call_fast_ai(messages)
-            if response and response.get("action") == "ALERT_HUMAN":
+            triage_result = await self._call_nano_triage(triage_messages)
+
+            if not triage_result or not triage_result.get("alert"):
+                # nanoが問題なしと判断 → スルー（コストほぼゼロ）
+                logger.debug(
+                    f"nano triage OK: {pos.symbol} {trade_id[:8]} - "
+                    f"{triage_result.get('reason', 'no issue') if triage_result else 'parse_fail'}"
+                )
+                return
+
+            nano_reason = triage_result.get("reason", "異常検知")
+            logger.info(
+                f"🚨 nano異常検知: {pos.symbol} {trade_id[:8]} - {nano_reason} → gpt-5.2精密評価へ"
+            )
+
+            # === Step 2: gpt-5.2 精密評価 ===
+            hold_hours = 0
+            if pos.open_time:
+                from datetime import datetime
+                hold_hours = (datetime.utcnow() - pos.open_time).total_seconds() / 3600
+
+            pos_data = {
+                "trade_id": trade_id,
+                "ticket": pos.ticket,
+                "symbol": pos.symbol,
+                "direction": pos.direction.value,
+                "entry_price": pos.open_price,
+                "current_price": pos.current_price,
+                "initial_tp": thesis.get("initial_tp", pos.tp),
+                "emergency_sl": thesis.get("emergency_sl", pos.sl),
+                "pnl_pips": pnl_pips,
+                "hold_hours": hold_hours,
+                "thesis_text": thesis.get("thesis_text", ""),
+                "invalidation": thesis.get("invalidation", []),
+                "market_regime": thesis.get("market_regime", "UNKNOWN"),
+                "profit_jpy": pos.profit,
+                "volume": pos.volume,
+            }
+
+            session = BrokerTime.get_session()
+            eval_messages = self._prompt_builder.build_single_position_eval_prompt(
+                pos_data=pos_data,
+                trigger_reason=trigger_reason,
+                nano_reason=nano_reason,
+                session=session,
+            )
+
+            eval_result = await self._call_deep_eval(eval_messages)
+
+            if not eval_result:
+                # gpt-5.2も失敗 → 安全のためDiscord通知のみ
                 await self._notifier.send(
-                    f"🚨 緊急アラート: {pos.symbol} {pos.direction.value}\n"
+                    f"🚨 異常検知（AI評価失敗）: {pos.symbol} {pos.direction.value}\n"
                     f"トリガー: {trigger_reason}\n"
+                    f"nano判断: {nano_reason}\n"
                     f"PnL: {pnl_pips:+.1f}pips\n"
-                    f"理由: {response.get('reason', 'N/A')}\n"
-                    f"🆔 {trade_id[:8]}",
+                    f"🆔 {trade_id[:8]}\n"
+                    f"❗ AI評価失敗のため手動確認してください",
                     level="CRITICAL",
+                )
+                return
+
+            # === Step 3: アクション実行 ===
+            action = eval_result.get("action", "HOLD")
+            eval_result["trade_id"] = trade_id  # trade_idを確実にセット
+
+            if action != "HOLD":
+                # H1バッチと同じアクション実行ロジックを再利用
+                result = await self._execute_position_action(eval_result, [pos_data])
+
+                # Discord通知
+                reasoning = eval_result.get("reasoning", "N/A")[:120]
+                thesis_status = eval_result.get("thesis_status", "N/A")
+                await self._notifier.send(
+                    f"🚨 精密評価実行: {pos.symbol} {pos.direction.value}\n"
+                    f"トリガー: {trigger_reason}\n"
+                    f"Thesis: {thesis_status} → {action}\n"
+                    f"PnL: {pnl_pips:+.1f}pips\n"
+                    f"理由: {reasoning}\n"
+                    f"🆔 {trade_id[:8]}",
+                    level="CRITICAL" if action == "FULL_CLOSE" else "WARNING",
+                )
+            else:
+                logger.info(
+                    f"gpt-5.2 HOLD判定: {pos.symbol} {trade_id[:8]} - "
+                    f"{eval_result.get('reasoning', 'N/A')[:80]}"
                 )
 
         except Exception as e:
-            logger.error(f"Layer2緊急判定エラー: {e}")
+            logger.error(f"Layer2 2階層評価エラー: {e}")
 
     @staticmethod
     def _get_thesis_atr(thesis: dict) -> Optional[float]:
@@ -475,6 +557,53 @@ class PositionMonitor:
             logger.error(f"緊急AI呼び出しエラー: {e}")
         return None
 
+    async def _call_nano_triage(self, messages: list[dict]) -> Optional[dict]:
+        """nano一次審査（gpt-5-nano）"""
+        try:
+            response = await asyncio.wait_for(
+                self._call_ai(CONFIG.WAIT_RECHECK_MODEL, messages),
+                timeout=CONFIG.AI_TIMEOUT_FAST_SEC,
+            )
+            if response:
+                return self._parse_response(response)
+        except Exception as e:
+            # nano失敗時は安全側にalert=Trueを返す
+            logger.warning(f"nano triageエラー: {e} → 安全側でalert=true")
+            return {"alert": True, "reason": "nano失敗・安全側にエスカレーション"}
+
+    async def _call_deep_eval(self, messages: list[dict]) -> Optional[dict]:
+        """単一ポジション精密評価（gpt-5.2）"""
+        try:
+            response = await asyncio.wait_for(
+                self._call_ai(CONFIG.MODEL_MAIN, messages),
+                timeout=CONFIG.AI_TIMEOUT_MAIN_SEC,
+            )
+            if response:
+                result = self._parse_response(response)
+                if result:
+                    result["_model_used"] = CONFIG.MODEL_MAIN
+                    return result
+        except asyncio.TimeoutError:
+            logger.warning("精密評価: gpt-5.2タイムアウト")
+        except Exception as e:
+            logger.error(f"精密評価エラー: {e}")
+
+        # gpt-5.2失敗 → gpt-5-miniフォールバック
+        try:
+            response = await asyncio.wait_for(
+                self._call_ai(CONFIG.MODEL_FAST, messages),
+                timeout=CONFIG.AI_TIMEOUT_FAST_SEC,
+            )
+            if response:
+                result = self._parse_response(response)
+                if result:
+                    result["_model_used"] = CONFIG.MODEL_FAST
+                    return result
+        except Exception as e:
+            logger.error(f"精密評価フォールバックも失敗: {e}")
+
+        return None
+
     async def _call_ai(self, model: str, messages: list[dict]) -> Optional[str]:
         """OpenAI Responses API呼び出し"""
         try:
@@ -488,6 +617,8 @@ class PositionMonitor:
                 kwargs["reasoning"] = {"effort": CONFIG.AI_REASONING_EFFORT_MAIN}
             elif model == CONFIG.MODEL_FAST:
                 kwargs["reasoning"] = {"effort": CONFIG.AI_REASONING_EFFORT_FAST}
+            elif model == CONFIG.WAIT_RECHECK_MODEL:
+                kwargs["reasoning"] = {"effort": CONFIG.WAIT_RECHECK_REASONING_EFFORT}
 
             response = await self._client.responses.create(**kwargs)
 

@@ -409,6 +409,132 @@ class TestPromptBuilder:
         assert len(messages) == 2
         assert "TP近接80%" in messages[1]["content"]
 
+    def test_build_nano_triage_prompt(self):
+        from ai.prompt_builder import PromptBuilder
+        pb = PromptBuilder()
+        messages = pb.build_nano_triage_prompt(
+            trigger_reason="TP近接80%",
+            symbol="USDJPY",
+            direction="LONG",
+            entry_price=149.5,
+            current_price=150.3,
+            pnl_pips=8.0,
+            thesis_summary="上昇トレンド継続で押し目買い",
+            invalidation_conditions=["149.0割れ", "H4陰線確定"],
+            tp=150.5,
+            sl=149.0,
+        )
+        assert len(messages) == 2
+        # システムプロンプト: 異常検知AI
+        assert "異常検知" in messages[0]["content"]
+        assert "alert" in messages[0]["content"]
+        # ユーザーコンテンツ: 全パラメータ含む
+        user = messages[1]["content"]
+        assert "USDJPY" in user
+        assert "LONG" in user
+        assert "149.5" in user
+        assert "150.3" in user
+        assert "+8.0pips" in user
+        assert "上昇トレンド継続" in user
+        assert "149.0割れ" in user
+        assert "H4陰線確定" in user
+        assert "TP近接80%" in user
+        assert "150.5" in user  # TP
+        assert "149.0" in user  # SL
+
+    def test_build_nano_triage_prompt_no_invalidation(self):
+        from ai.prompt_builder import PromptBuilder
+        pb = PromptBuilder()
+        messages = pb.build_nano_triage_prompt(
+            trigger_reason="ATR逆行",
+            symbol="EURUSD",
+            direction="SHORT",
+            entry_price=1.085,
+            current_price=1.088,
+            pnl_pips=-3.0,
+            thesis_summary="ユーロ弱含み",
+            invalidation_conditions=[],
+            tp=None,
+            sl=None,
+        )
+        assert len(messages) == 2
+        user = messages[1]["content"]
+        assert "N/A" in user  # invalidation空→N/A
+        assert "EURUSD" in user
+        assert "SHORT" in user
+
+    def test_build_single_position_eval_prompt(self):
+        from ai.prompt_builder import PromptBuilder
+        pb = PromptBuilder()
+        pos_data = {
+            "trade_id": "eval-test-001",
+            "symbol": "GOLD",
+            "direction": "LONG",
+            "entry_price": 2350.0,
+            "current_price": 2380.0,
+            "initial_tp": 2400.0,
+            "emergency_sl": 2330.0,
+            "pnl_pips": 30.0,
+            "hold_hours": 3.5,
+            "thesis_text": "ゴールド上昇トレンド、リスクオフで買い",
+            "invalidation": ["2340割れ", "ドル高加速"],
+            "market_regime": "TRENDING",
+        }
+        messages = pb.build_single_position_eval_prompt(
+            pos_data=pos_data,
+            trigger_reason="TP近接80%",
+            nano_reason="TP到達間近、利確タイミング検討",
+            session="LONDON_NY_OVERLAP",
+        )
+        assert len(messages) == 2
+        # システムプロンプト: アクション定義含む
+        sys_prompt = messages[0]["content"]
+        assert "FULL_CLOSE" in sys_prompt
+        assert "PARTIAL_CLOSE" in sys_prompt
+        assert "UPDATE_TP" in sys_prompt
+        assert "HOLD" in sys_prompt
+        assert "thesis_status" in sys_prompt
+        # ユーザーコンテンツ: 全フィールド含む
+        user = messages[1]["content"]
+        assert "eval-test-001" in user
+        assert "GOLD" in user
+        assert "LONG" in user
+        assert "2350.0" in user
+        assert "2380.0" in user
+        assert "2400.0" in user  # TP
+        assert "2330.0" in user  # SL
+        assert "30.0" in user    # pnl
+        assert "3.5" in user     # hold_hours
+        assert "ゴールド上昇トレンド" in user
+        assert "2340割れ" in user
+        assert "ドル高加速" in user
+        assert "TRENDING" in user
+        assert "TP近接80%" in user
+        assert "TP到達間近" in user
+        assert "LONDON_NY_OVERLAP" in user
+
+    def test_build_single_position_eval_prompt_minimal(self):
+        """最小限のpos_dataでもエラーにならないことを確認"""
+        from ai.prompt_builder import PromptBuilder
+        pb = PromptBuilder()
+        pos_data = {
+            "symbol": "USDJPY",
+            "direction": "SHORT",
+            "entry_price": 150.0,
+            "current_price": 149.5,
+        }
+        messages = pb.build_single_position_eval_prompt(
+            pos_data=pos_data,
+            trigger_reason="ATR逆行",
+            nano_reason="テスト理由",
+            session="TOKYO",
+        )
+        assert len(messages) == 2
+        user = messages[1]["content"]
+        assert "USDJPY" in user
+        assert "SHORT" in user
+        assert "N/A" in user  # missing trade_id → N/A
+
 
 # ──────────── Semantic Validator テスト ────────────
 

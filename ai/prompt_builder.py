@@ -228,6 +228,59 @@ JSONのみで回答。余計な説明は不要です。
 }"""
 
 
+NANO_TRIAGE_SYSTEM_PROMPT = """あなたはFXポジションの異常検知AIです。
+エントリー時のThesis（根拠）と撤退ルールを、現在の市場状況と比較し、
+異常があるかだけを判断してください。
+JSONのみで回答。
+
+判断基準:
+- 撤退ルール（invalidation_conditions）に触れている→ alert=true
+- Thesisの前提が崩れている→ alert=true
+- 価格がSLに急接近→ alert=true
+- 問題なさそう→ alert=false
+- 迷ったら alert=true（安全側に倒す）
+
+出力JSON:
+{
+  "alert": true,
+  "reason": "理由50字以内"
+}"""
+
+
+SINGLE_POSITION_EVAL_SYSTEM_PROMPT = """あなたはFXポジション管理専門のAIです。
+異常が検知されたポジションを精密に評価し、
+具体的なアクションをJSONで返してください。前置き不要。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【判断の優先順位】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Invalidation Conditionsに抵触 → FULL_CLOSE
+2. Thesis前提崩壊（WEAKENING）→ 分割決済検討
+3. 価格が順調に推移 → TPトレーリング
+4. 保有時間が長すぎる（8時間以上）→ WEAKENING要因
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【アクション定義】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- HOLD: 現状維持
+- UPDATE_TP: TPトレーリング（new_tpに新TP価格）
+- PARTIAL_CLOSE: 分割決済（close_percentage=50推奨）
+- FULL_CLOSE: 全決済（Thesis崩壊・SL近接・緊急時）
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【出力JSONスキーマ】
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{
+  "trade_id": "ポジションID",
+  "thesis_status": "VALID|WEAKENING|BROKEN",
+  "action": "HOLD|UPDATE_TP|PARTIAL_CLOSE|FULL_CLOSE",
+  "new_tp": null,
+  "close_percentage": 0,
+  "reasoning": "判断理由（150字程度、具体的な価格水準を含む）",
+  "urgency": "NORMAL|HIGH"
+}"""
+
+
 # ═══════════════════════════════════════════════════════════════
 # Layer 2/3 構築
 # ═══════════════════════════════════════════════════════════════
@@ -465,4 +518,73 @@ class PromptBuilder:
         return [
             {"role": "system", "content": EMERGENCY_SYSTEM_PROMPT},    # Layer 1: Static
             {"role": "user", "content": dynamic_content},              # Layer 3: Dynamic (直接)
+        ]
+
+    def build_nano_triage_prompt(
+        self,
+        trigger_reason: str,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        current_price: float,
+        pnl_pips: float,
+        thesis_summary: str,
+        invalidation_conditions: list[str],
+        tp: float | None = None,
+        sl: float | None = None,
+    ) -> list[dict]:
+        """ナノ一次審査プロンプト（最小トークン）"""
+        inv_text = ", ".join(invalidation_conditions) if invalidation_conditions else "N/A"
+        user_content = (
+            f"【トレードのメモ】\n"
+            f"銀柄: {symbol} {direction}\n"
+            f"根拠の要約: {thesis_summary[:150]}\n"
+            f"撤退ルール: {inv_text}\n\n"
+            f"【今の状況】\n"
+            f"エントリー価格: {entry_price}\n"
+            f"現在価格: {current_price}\n"
+            f"PnL: {pnl_pips:+.1f}pips\n"
+            f"TP: {tp or 'N/A'}  SL: {sl or 'N/A'}\n"
+            f"トリガー: {trigger_reason}"
+        )
+
+        return [
+            {"role": "system", "content": NANO_TRIAGE_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ]
+
+    def build_single_position_eval_prompt(
+        self,
+        pos_data: dict,
+        trigger_reason: str,
+        nano_reason: str,
+        session: str,
+    ) -> list[dict]:
+        """単一ポジション精密評価プロンプト（gpt-5.2用）"""
+        thesis = pos_data.get("thesis_text", "N/A")[:200]
+        invalidation = pos_data.get("invalidation", [])
+        inv_text = ", ".join(invalidation) if isinstance(invalidation, list) else str(invalidation)
+
+        user_content = (
+            f"【異常検知による精密評価】\n"
+            f"トリガー: {trigger_reason}\n"
+            f"一次審査の判断: {nano_reason}\n\n"
+            f"trade_id: {pos_data.get('trade_id', 'N/A')}\n"
+            f"symbol: {pos_data.get('symbol')} {pos_data.get('direction')}\n"
+            f"entry_price: {pos_data.get('entry_price')}\n"
+            f"current_price: {pos_data.get('current_price')}\n"
+            f"current_tp: {pos_data.get('initial_tp')}\n"
+            f"current_sl: {pos_data.get('emergency_sl')}\n"
+            f"pnl_pips: {pos_data.get('pnl_pips', 0):.1f}\n"
+            f"hold_hours: {pos_data.get('hold_hours', 0):.1f}\n"
+            f"thesis: {thesis}\n"
+            f"invalidation_conditions: {inv_text}\n"
+            f"market_regime: {pos_data.get('market_regime', 'N/A')}\n\n"
+            f"セッション(XMT): {session}\n"
+            f"現在時刻(XMT): {BrokerTime.now_str()}"
+        )
+
+        return [
+            {"role": "system", "content": SINGLE_POSITION_EVAL_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
         ]
