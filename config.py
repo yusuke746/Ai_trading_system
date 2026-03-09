@@ -62,7 +62,7 @@ class TradingConfig:
     MAX_RISK_PER_TRADE_PCT: float = 2.0
     MAX_DAILY_DRAWDOWN_PCT: float = 3.0
     MAX_TOTAL_EXPOSURE_PCT: float = 3.0
-    MAX_POSITIONS: int = 3
+    MAX_POSITIONS: int = 5
     MAX_USD_EXPOSURE: int = 2
     MAX_JPY_EXPOSURE: int = 1
 
