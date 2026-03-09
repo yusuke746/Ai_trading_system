@@ -497,10 +497,15 @@ class PositionMonitor:
 
             if hasattr(response, "output"):
                 for item in response.output:
-                    if hasattr(item, "content"):
-                        for block in item.content:
-                            if hasattr(block, "text"):
-                                text += block.text
+                    # reasoning itemはcontent=Noneなのでスキップ
+                    if getattr(item, "type", "") != "message":
+                        continue
+                    content = getattr(item, "content", None)
+                    if content is None:
+                        continue
+                    for block in content:
+                        if hasattr(block, "text"):
+                            text += block.text
 
             if hasattr(response, "usage"):
                 tokens_in = response.usage.input_tokens

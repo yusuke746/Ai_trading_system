@@ -318,17 +318,22 @@ class EntryEvaluator:
 
             response = await self._client.responses.create(**kwargs)
 
-            # レスポンスからテキスト抽出
+            # レスポンスからテキスト抽出ï¼reasoning itemをスキップし、messageのみ抽出）
             text = ""
             tokens_in = 0
             tokens_out = 0
 
             if hasattr(response, "output"):
                 for item in response.output:
-                    if hasattr(item, "content"):
-                        for content_block in item.content:
-                            if hasattr(content_block, "text"):
-                                text += content_block.text
+                    # reasoning itemはcontent=Noneなのでスキップ
+                    if getattr(item, "type", "") != "message":
+                        continue
+                    content = getattr(item, "content", None)
+                    if content is None:
+                        continue
+                    for content_block in content:
+                        if hasattr(content_block, "text"):
+                            text += content_block.text
 
             if hasattr(response, "usage"):
                 tokens_in = response.usage.input_tokens

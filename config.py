@@ -67,8 +67,8 @@ class TradingConfig:
     MAX_JPY_EXPOSURE: int = 1
 
     # AI設定
-    AI_TIMEOUT_MAIN_SEC: int = 30
-    AI_TIMEOUT_FAST_SEC: int = 20
+    AI_TIMEOUT_MAIN_SEC: int = 90   # gpt-5系推論モデルは思考時間が必要
+    AI_TIMEOUT_FAST_SEC: int = 30
     AI_MIN_CONFIDENCE: float = 0.6
     AI_MAX_TP_DEVIATION_PCT: float = 5.0
     AI_MAX_RETRIES: int = 3
@@ -151,7 +151,7 @@ class TradingConfig:
 
     # web_searchフォールバック
     WEB_SEARCH_TIMEOUT_SEC: int = 10
-    WEB_SEARCH_TOOL_TYPE: str = "web_search_20260209"  # OpenAI web_searchツールバージョン
+    WEB_SEARCH_TOOL_TYPE: str = "web_search_preview"  # OpenAI web_searchツールバージョン
     WEB_SEARCH_CONTEXT_SIZE: str = "low"               # low/medium/high
 
     # マルチインスタンス防止
