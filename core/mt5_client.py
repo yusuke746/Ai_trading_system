@@ -422,10 +422,12 @@ class MT5Client:
                 if deal.entry in closing_entries:
                     realized_primary += deal.profit + deal.swap + deal.commission
 
-        # 2) フォールバック: 広窓取得 + epoch時刻でXMT当日フィルタ
+        # 2) 標準経路: 広窓取得 + epoch時刻でXMT当日フィルタ
+        # deal.time(epoch)基準のため、MT5側datetime解釈差の影響を受けにくい。
         realized_fallback = 0.0
-        from_utc = (now_xmt - timedelta(days=3)).astimezone(timezone.utc)
-        to_utc = (now_xmt + timedelta(minutes=5)).astimezone(timezone.utc)
+        # 取得窓は広めに確保（時刻解釈がズレても取りこぼしにくくする）
+        from_utc = (now_xmt - timedelta(days=7)).astimezone(timezone.utc)
+        to_utc = (now_xmt + timedelta(days=1)).astimezone(timezone.utc)
         fallback_deals = mt5.history_deals_get(
             from_utc.replace(tzinfo=None),
             to_utc.replace(tzinfo=None),
@@ -440,13 +442,9 @@ class MT5Client:
                 if today_start <= deal_xmt <= now_xmt + timedelta(minutes=5):
                     realized_fallback += deal.profit + deal.swap + deal.commission
 
-        # primaryがゼロでもfallbackに値があればfallback採用
-        # それ以外はprimary優先（XMT窓の方が意図に近い）
-        realized_pnl = (
-            realized_fallback
-            if realized_primary == 0.0 and realized_fallback != 0.0
-            else realized_primary
-        )
+        # 既定はepochフィルタ（fallback）を採用。
+        # fallbackが取得不能(None)のときのみprimaryにフォールバックする。
+        realized_pnl = realized_fallback if fallback_deals is not None else realized_primary
 
         # ─── 含み損益（保有中ポジション） ───
         positions = mt5.positions_get()
