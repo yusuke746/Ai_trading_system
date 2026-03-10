@@ -327,9 +327,9 @@ class PositionMonitor:
                 if atr and atr > 0:
                     # 含み損がATR×2以上
                     loss_distance = abs(current - pos.open_price)
-                    if pos.profit < 0 and loss_distance > atr * 2:
+                    if pos.profit < 0 and loss_distance > atr * 1.8:
                         await self._trigger_layer2(
-                            pos, thesis, "急激な逆行（ATR×2超）"
+                            pos, thesis, "急激な逆行（ATR×1.8超）"
                         )
 
         except Exception as e:
