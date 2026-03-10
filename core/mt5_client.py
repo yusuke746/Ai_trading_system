@@ -382,57 +382,80 @@ class MT5Client:
             if not await self.ensure_connection():
                 return 0.0
 
-            # ─── 実現損益（今日XMT 00:00以降の決済分） ───
-            now_xmt = BrokerTime.now()
-            today_start = BrokerTime.today_start()
-
-            out_by = getattr(mt5, "DEAL_ENTRY_OUT_BY", 3)
-            closing_entries = (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_INOUT, out_by)
-
-            # 1) まずはXMT窓で直接取得（通常はこちらで正しい）
-            realized_primary = 0.0
-            primary_from = today_start.replace(tzinfo=None)
-            primary_to = (now_xmt + timedelta(minutes=5)).replace(tzinfo=None)
-            primary_deals = mt5.history_deals_get(primary_from, primary_to)
-            if primary_deals:
-                for deal in primary_deals:
-                    if deal.entry in closing_entries:
-                        realized_primary += deal.profit + deal.swap + deal.commission
-
-            # 2) フォールバック: 広窓取得 + epoch時刻でXMT当日フィルタ
-            realized_fallback = 0.0
-            from_utc = (now_xmt - timedelta(days=3)).astimezone(timezone.utc)
-            to_utc = (now_xmt + timedelta(minutes=5)).astimezone(timezone.utc)
-            fallback_deals = mt5.history_deals_get(
-                from_utc.replace(tzinfo=None),
-                to_utc.replace(tzinfo=None),
-            )
-            if fallback_deals:
-                for deal in fallback_deals:
-                    if deal.entry not in closing_entries:
-                        continue
-                    deal_xmt = BrokerTime.from_utc(
-                        datetime.fromtimestamp(deal.time, timezone.utc)
-                    )
-                    if today_start <= deal_xmt <= now_xmt + timedelta(minutes=5):
-                        realized_fallback += deal.profit + deal.swap + deal.commission
-
-            # primaryがゼロでもfallbackに値があればfallback採用
-            # それ以外はprimary優先（XMT窓の方が意図に近い）
-            realized_pnl = (
-                realized_fallback
-                if realized_primary == 0.0 and realized_fallback != 0.0
-                else realized_primary
-            )
-
-            # ─── 含み損益（保有中ポジション） ───
-            positions = mt5.positions_get()
-            floating_pnl = 0.0
-            if positions:
-                for pos in positions:
-                    floating_pnl += pos.profit + pos.swap
-
+            realized_pnl, floating_pnl = self._calc_daily_pnl_components_locked()
             return realized_pnl + floating_pnl
+
+    async def get_daily_pnl_breakdown(self) -> dict:
+        """日次損益の内訳を返す（実現/含み/合計）。"""
+        async with _mt5_lock:
+            if not await self.ensure_connection():
+                return {
+                    "realized_pnl": 0.0,
+                    "floating_pnl": 0.0,
+                    "total_pnl": 0.0,
+                }
+
+            realized_pnl, floating_pnl = self._calc_daily_pnl_components_locked()
+            return {
+                "realized_pnl": realized_pnl,
+                "floating_pnl": floating_pnl,
+                "total_pnl": realized_pnl + floating_pnl,
+            }
+
+    def _calc_daily_pnl_components_locked(self) -> tuple[float, float]:
+        """日次PnL内訳を算出（呼び出し元でMT5 lock保持前提）。"""
+
+        # ─── 実現損益（今日XMT 00:00以降の決済分） ───
+        now_xmt = BrokerTime.now()
+        today_start = BrokerTime.today_start()
+
+        out_by = getattr(mt5, "DEAL_ENTRY_OUT_BY", 3)
+        closing_entries = (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_INOUT, out_by)
+
+        # 1) まずはXMT窓で直接取得（通常はこちらで正しい）
+        realized_primary = 0.0
+        primary_from = today_start.replace(tzinfo=None)
+        primary_to = (now_xmt + timedelta(minutes=5)).replace(tzinfo=None)
+        primary_deals = mt5.history_deals_get(primary_from, primary_to)
+        if primary_deals:
+            for deal in primary_deals:
+                if deal.entry in closing_entries:
+                    realized_primary += deal.profit + deal.swap + deal.commission
+
+        # 2) フォールバック: 広窓取得 + epoch時刻でXMT当日フィルタ
+        realized_fallback = 0.0
+        from_utc = (now_xmt - timedelta(days=3)).astimezone(timezone.utc)
+        to_utc = (now_xmt + timedelta(minutes=5)).astimezone(timezone.utc)
+        fallback_deals = mt5.history_deals_get(
+            from_utc.replace(tzinfo=None),
+            to_utc.replace(tzinfo=None),
+        )
+        if fallback_deals:
+            for deal in fallback_deals:
+                if deal.entry not in closing_entries:
+                    continue
+                deal_xmt = BrokerTime.from_utc(
+                    datetime.fromtimestamp(deal.time, timezone.utc)
+                )
+                if today_start <= deal_xmt <= now_xmt + timedelta(minutes=5):
+                    realized_fallback += deal.profit + deal.swap + deal.commission
+
+        # primaryがゼロでもfallbackに値があればfallback採用
+        # それ以外はprimary優先（XMT窓の方が意図に近い）
+        realized_pnl = (
+            realized_fallback
+            if realized_primary == 0.0 and realized_fallback != 0.0
+            else realized_primary
+        )
+
+        # ─── 含み損益（保有中ポジション） ───
+        positions = mt5.positions_get()
+        floating_pnl = 0.0
+        if positions:
+            for pos in positions:
+                floating_pnl += pos.profit + pos.swap
+
+        return realized_pnl, floating_pnl
 
     async def get_spread(self, symbol: str) -> float:
         """現在スプレッド（points単位）"""

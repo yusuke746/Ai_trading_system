@@ -391,12 +391,14 @@ async def full_status():
     positions = await mt5_client.get_all_positions()
     balance = await mt5_client.get_account_balance()
     daily_pnl = await mt5_client.get_daily_pnl()
+    daily_pnl_breakdown = await mt5_client.get_daily_pnl_breakdown()
     db_stats = await thesis_db.get_db_stats()
 
     report.update({
         "positions": len(positions),
         "balance": balance,
         "daily_pnl": daily_pnl,
+        "daily_pnl_breakdown": daily_pnl_breakdown,
         "db_stats": db_stats,
     })
     return report
