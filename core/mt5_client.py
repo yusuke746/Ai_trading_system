@@ -7,7 +7,7 @@ VPS上のMT5は頻繁に切断されるため、堅牢な再接続ロジック�
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import MetaTrader5 as mt5
@@ -371,27 +371,42 @@ class MT5Client:
         今日の日次損益合計（JPY）。
         daily_pnl = 実現損益（今日決済分） + 含み損益（保有中ポジション）
 
-        NOTE: mt5.history_deals_get() はサーバー時間（XMT = Europe/Athens）で
-        引数を解釈する。UTC変換してはならない。
+        NOTE:
+        - MT5 Pythonの history_deals_get(datetime, datetime) は環境により
+          datetimeの解釈がズレることがあるため、広めの期間を取得し、
+          deal.time (epoch) を XMT に変換して当日分を手動フィルタする。
+        - 本メソッドは「実現損益 + 含み損益」を返す。
         """
         async with _mt5_lock:
             if not await self.ensure_connection():
                 return 0.0
 
             # ─── 実現損益（今日XMT 00:00以降の決済分） ───
-            # MT5 APIはサーバー時間(XMT)で解釈するため、UTC変換せずnaiveで渡す
-            today_start = BrokerTime.today_start()
-            from_ts = today_start.replace(tzinfo=None)  # XMT 00:00 as naive
             now_xmt = BrokerTime.now()
-            to_ts = now_xmt.replace(tzinfo=None) + timedelta(minutes=5)
+            today_start = BrokerTime.today_start()
 
-            deals = mt5.history_deals_get(from_ts, to_ts)
+            # 取得窓は広め（3日）に取り、deal.timeでXMT日付を厳密フィルタする
+            from_utc = (now_xmt - timedelta(days=3)).astimezone(timezone.utc)
+            to_utc = (now_xmt + timedelta(minutes=5)).astimezone(timezone.utc)
+            deals = mt5.history_deals_get(
+                from_utc.replace(tzinfo=None),
+                to_utc.replace(tzinfo=None),
+            )
 
             realized_pnl = 0.0
             if deals:
                 for deal in deals:
                     # DEAL_ENTRY_OUT (1) or DEAL_ENTRY_INOUT (2) = 決済取引
-                    if deal.entry in (1, 2):
+                    if deal.entry not in (1, 2):
+                        continue
+
+                    # epoch -> UTC -> XMT に変換して「今日分のみ」集計
+                    deal_xmt = BrokerTime.from_utc(
+                        datetime.fromtimestamp(deal.time, timezone.utc)
+                    )
+                    if deal_xmt < today_start or deal_xmt > now_xmt + timedelta(minutes=5):
+                        continue
+
                         realized_pnl += deal.profit + deal.swap + deal.commission
 
             # ─── 含み損益（保有中ポジション） ───
