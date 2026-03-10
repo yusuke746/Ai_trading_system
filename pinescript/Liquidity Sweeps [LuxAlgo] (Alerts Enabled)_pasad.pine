@@ -30,7 +30,7 @@ colBr3 = input.color(#f2364541, 'Bear' , group='Sweep Area')
 // --- Alerts settings
 enableAlerts     = input.bool(true,  "Enable Alerts", group="Alerts")
 useBarCloseAlert = input.bool(false, "Fire only on bar close (safer, less noisy)", group="Alerts")
-strengthDefault  = input.string("normal", "strength value in JSON", options=["weak","normal","strong"], group="Alerts")
+webhookSecret    = input.string("", "Webhook Secret (WEBHOOK_SECRET)", group="Alerts")
 
 oW = opt == 'Only Wicks'
 oO = opt == 'Only Outbreaks & Retest'
@@ -91,31 +91,18 @@ method br(piv get, color c3, color c, int d) =>
 
 lnDot(y, c) => line.new(bar_index, y, bar_index+3, y, color=c, style=line.style_dotted)
 
-// --- [FIX] ISO timestamp using str.format_time()
-f_time_str() =>
-    t = barstate.isrealtime ? timenow : time
-    str.format_time(t, "yyyy-MM-dd'T'HH:mm:ss", "UTC")
-
-// --- [FIX] JSON builder: each part assigned individually (no multi-line concat)
-f_json(action, comment) =>
-    t           = f_time_str()
-    sym         = syminfo.ticker
-    tf          = timeframe.period
-    pr          = str.tostring(close)
-    conf        = useBarCloseAlert ? "close" : "intrabar"
-    safeComment = str.replace_all(comment, "\"", "'")
-    p1  = "{\"time\":\"" + t + "\","
+// --- JSON builder: WebhookPayload互換フォーマット
+f_json(direction) =>
+    sym = syminfo.ticker
+    pr  = str.tostring(close)
+    p1  = "{\"secret\":\"" + webhookSecret + "\","
     p2  = "\"symbol\":\"" + sym + "\","
-    p3  = "\"price\":" + pr + ","
-    p4  = "\"source\":\"LiquiditySweepsLuxAlgo\","
-    p5  = "\"action\":\"" + action + "\","
-    p6  = "\"strength\":\"" + strengthDefault + "\","
-    p7  = "\"comment\":\"" + safeComment + "\","
-    p8  = "\"tf\":\"" + tf + "\","
-    p9  = "\"signal_type\":\"structure\","
-    p10 = "\"event\":\"liquidity_sweep\","
-    p11 = "\"confirmed\":\"" + conf + "\"}"
-    p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9 + p10 + p11
+    p3  = "\"direction\":\"" + direction + "\","
+    p4  = "\"price\":" + pr + ","
+    p5  = "\"timeframe\":\"M15\","
+    p6  = "\"pattern\":\"LIQUIDITY_SWEEP\","
+    p7  = "\"source\":\"luxalgo_sweep\"}"
+    p1 + p2 + p3 + p4 + p5 + p6 + p7
 //-----------------------------------------------------------------------------}
 
 //-----------------------------------------------------------------------------
@@ -207,8 +194,8 @@ alertcondition(bearSweep, title="Bearish Liquidity Sweep", message="BEAR_SWEEP")
 doFire = enableAlerts and (not useBarCloseAlert or barstate.isconfirmed)
 
 if doFire and bullSweep
-    alert(f_json("buy", "Liquidity Sweep (Bullish)"), alert.freq_once_per_bar)
+    alert(f_json("LONG"), alert.freq_once_per_bar)
 
 if doFire and bearSweep
-    alert(f_json("sell", "Liquidity Sweep (Bearish)"), alert.freq_once_per_bar)
+    alert(f_json("SHORT"), alert.freq_once_per_bar)
 //-----------------------------------------------------------------------------}

@@ -59,16 +59,15 @@ LuxAlgo Sweeps
 | 7 | FVG Mitigation SHORT USDJPY | USDJPY | M15 | LuxAlgo FVG | Bearish FVG Mitigation |
 | 8 | FVG Mitigation LONG EURUSD | EURUSD | M15 | LuxAlgo FVG | Bullish FVG Mitigation |
 | 9 | FVG Mitigation SHORT EURUSD | EURUSD | M15 | LuxAlgo FVG | Bearish FVG Mitigation |
-| 10 | Sweep LONG GOLD | GOLD | M15 | LuxAlgo Sweeps | Any alert() function call |
-| 11 | Sweep SHORT GOLD | GOLD | M15 | LuxAlgo Sweeps | Any alert() function call |
-| 12 | Sweep LONG USDJPY | USDJPY | M15 | LuxAlgo Sweeps | Any alert() function call |
-| 13 | Sweep SHORT USDJPY | USDJPY | M15 | LuxAlgo Sweeps | Any alert() function call |
-| 14 | Sweep LONG EURUSD | EURUSD | M15 | LuxAlgo Sweeps | Any alert() function call |
-| 15 | Sweep SHORT EURUSD | EURUSD | M15 | LuxAlgo Sweeps | Any alert() function call |
-| 16-20 | *(予備 — 5スロット空き)* | | | | |
+| 10 | Sweep GOLD | GOLD | M15 | LuxAlgo Sweeps | Any alert() function call |
+| 11 | Sweep USDJPY | USDJPY | M15 | LuxAlgo Sweeps | Any alert() function call |
+| 12 | Sweep EURUSD | EURUSD | M15 | LuxAlgo Sweeps | Any alert() function call |
+| 13-20 | *(予備 — 8スロット空き)* | | | | |
 
 > **v2.0変更**: Lorentzian 4スロットを廃止 → 全3銘柄均等にSweep+FVGカバー。
-> 予備5スロットは将来のインジケータ追加や銘柄追加に使用可能。
+> Sweepスクリプトは `alert()` でJSON（direction含む）を自動生成するため
+> LONG/SHORT分割不要 → 銘柄あたり1アラートで済む。
+> 予備8スロットは将来のインジケータ追加や銘柄追加に使用可能。
 
 > **重要: FVGアラート条件の変更**
 > 旧: 「Bullish FVG」（FVG検出＝ギャップ発生）→ タイミングが早すぎてエッジなし
@@ -131,6 +130,7 @@ AI承認率 15〜25%（confidence≥0.65で厳選） → 約5〜20 トレード/
 2. LuxAlgo - Liquidity Sweeps (Alerts)
    - Enable Alerts: ON
    - Liquidity: 5, Only Wicks: ON
+   - `Webhook Secret` → FastAPIの `WEBHOOK_SECRET` と同じ値を入力
 
 3. Q-Trend
    - Period: 200, ATR: 14（アラート不要・視覚のみ）
@@ -176,15 +176,23 @@ FVG Mitigation SHORT:
 
 > ⚠️ `YOUR_SECRET_HERE` を実際のWebhook Secretに置換すること
 
-#### LuxAlgo Liquidity Sweeps のアラート (6個)
+#### LuxAlgo Liquidity Sweeps のアラート (3個)
 
-改修済みスクリプトが `alert()` でJSON を自動生成するため：
+改修済みスクリプトが `alert()` で direction（LONG/SHORT）を含むwebhook JSONを自動生成。
+**1銘柄につき1アラート** で LONG/SHORT 両方をカバーできる。
 
-1. 条件: `Liquidity Sweeps [LuxAlgo] (Alerts)` → **「任意のalert()関数の呼び出し」**
+各銘柄のM15チャートで:
+1. 条件: `LuxAlgo - Liquidity Sweeps (Alerts)` → **「Any alert() function call」**
 2. メッセージ: **空欄のまま**（スクリプトが自動生成するJSONが送信される）
+3. Webhook URL を設定
 
-> 旧方式の手動JSONメッセージは不要。スクリプト側の `f_json()` が
-> symbol, price, direction, source 等を全て含むJSONを自動構築する。
+> ⚠️ **「Bullish Liquidity Sweep」「Bearish Liquidity Sweep」は選ばないこと！**
+> これらは `alertcondition()` で、固定文字列メッセージしか送れない。
+> **「Any alert() function call」** を選ぶと `alert()` 関数が発火し、
+> `{"secret":"...", "direction":"LONG", ...}` のwebhook JSONが自動送信される。
+>
+> 1つのアラートで Bull/Bear 両方の sweep を検出し、
+> JSON内の `direction` フィールドで LONG/SHORT を自動判別する。
 
 ---
 
