@@ -148,9 +148,9 @@ class EntryEvaluator:
         validation_result = "PASS"
 
         # confidence下限チェック
-        if decision == "APPROVE" and confidence < 0.6:
+        if decision == "APPROVE" and confidence < CONFIG.AI_MIN_CONFIDENCE:
             ai_response["decision"] = "REJECT"
-            ai_response["reject_reason"] = f"confidence {confidence} < 0.6"
+            ai_response["reject_reason"] = f"confidence {confidence} < {CONFIG.AI_MIN_CONFIDENCE}"
             validation_result = "FAIL_CONFIDENCE"
             decision = "REJECT"
 

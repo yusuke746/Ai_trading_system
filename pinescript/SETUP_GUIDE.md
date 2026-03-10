@@ -7,17 +7,22 @@ TradingViewプラン制約（インジケータ5つ・アラート20個）の中
 
 ---
 
-## インジケータ構成（5スロット）
+## インジケータ構成（4スロット + 1視覚専用）
 
-各銘柄のM15チャートに以下5つのインジケータを設定する。
+各銘柄のM15チャートに以下のインジケータを設定する。
 
 | # | インジケータ | 用途 | アラート使用 |
 |---|-------------|------|:---:|
 | 1 | **AI Trading Signal Generator v1.0** (カスタム) | メイン戦略シグナル（5戦略統合） | ✅ |
-| 2 | **LuxAlgo - Fair Value Gap** | 構造的インバランス検出 | ✅ |
+| 2 | **LuxAlgo - Fair Value Gap** | FVG充填（Mitigation）でエントリー | ✅ |
 | 3 | **LuxAlgo - Liquidity Sweeps (Alerts)** | 流動性スイープ検出 | ✅ |
-| 4 | **Lorentzian Classification** | ML分類（確認・コンテキスト用） | ✅ |
-| 5 | **Q-Trend** | トレンド方向の視覚確認 | ❌ (視覚のみ) |
+| 4 | **Q-Trend** | トレンド方向の視覚確認 | ❌ (視覚のみ) |
+| 5 | *(空き — 将来用)* | | |
+
+> **v2.0変更**: Lorentzian Classification を廃止。
+> 理由: ①webhook JSON未対応（alertconditionのみでalert()なし）
+> ②カスタム5戦略がRSI/EMA/モメンタムを既にカバーしており情報量の追加が少ない
+> ③空いたアラート枠を全3銘柄均等カバーに再配分
 
 ### 各インジケータの役割
 
@@ -30,13 +35,11 @@ TradingViewプラン制約（インジケータ5つ・アラート20個）の中
   └─ MEAN_REVERSION:  BB + RSI極値での反転を検出
 
 LuxAlgo FVG
-  └─ FVG_FILL:        Fair Value Gap充填で構造的エントリー
+  └─ FVG_MITIGATION:  Fair Value Gap充填（価格がFVGゾーンを埋めた瞬間）
+     ※「検出」ではなく「充填」でアラートを発火させる
 
 LuxAlgo Sweeps
   └─ LIQUIDITY_SWEEP:  流動性スイープ後の反転エントリー
-
-Lorentzian Classification
-  └─ LORENTZIAN:       機械学習ベースの方向分類
 ```
 
 ---
@@ -50,26 +53,30 @@ Lorentzian Classification
 | 1 | MultiStrat GOLD | GOLD | M15 | Custom Signal Generator | Any alert() function call |
 | 2 | MultiStrat USDJPY | USDJPY | M15 | Custom Signal Generator | Any alert() function call |
 | 3 | MultiStrat EURUSD | EURUSD | M15 | Custom Signal Generator | Any alert() function call |
-| 4 | FVG BUY GOLD | GOLD | M15 | LuxAlgo FVG | Bullish FVG |
-| 5 | FVG SELL GOLD | GOLD | M15 | LuxAlgo FVG | Bearish FVG |
-| 6 | FVG BUY USDJPY | USDJPY | M15 | LuxAlgo FVG | Bullish FVG |
-| 7 | FVG SELL USDJPY | USDJPY | M15 | LuxAlgo FVG | Bearish FVG |
-| 8 | FVG BUY EURUSD | EURUSD | M15 | LuxAlgo FVG | Bullish FVG |
-| 9 | FVG SELL EURUSD | EURUSD | M15 | LuxAlgo FVG | Bearish FVG |
-| 10 | Sweep BUY GOLD | GOLD | M15 | LuxAlgo Sweeps | Sweep Buy |
-| 11 | Sweep SELL GOLD | GOLD | M15 | LuxAlgo Sweeps | Sweep Sell |
-| 12 | Sweep BUY USDJPY | USDJPY | M15 | LuxAlgo Sweeps | Sweep Buy |
-| 13 | Sweep SELL USDJPY | USDJPY | M15 | LuxAlgo Sweeps | Sweep Sell |
-| 14 | Sweep BUY EURUSD | EURUSD | M15 | LuxAlgo Sweeps | Sweep Buy |
-| 15 | Sweep SELL EURUSD | EURUSD | M15 | LuxAlgo Sweeps | Sweep Sell |
-| 16 | Lorentzian BUY GOLD | GOLD | M15 | Lorentzian | Buy Signal |
-| 17 | Lorentzian SELL GOLD | GOLD | M15 | Lorentzian | Sell Signal |
-| 18 | Lorentzian BUY USDJPY | USDJPY | M15 | Lorentzian | Buy Signal |
-| 19 | Lorentzian SELL USDJPY | USDJPY | M15 | Lorentzian | Sell Signal |
-| 20 | (空き ─ 予備) | | | | |
+| 4 | FVG Mitigation LONG GOLD | GOLD | M15 | LuxAlgo FVG | Bullish FVG Mitigation |
+| 5 | FVG Mitigation SHORT GOLD | GOLD | M15 | LuxAlgo FVG | Bearish FVG Mitigation |
+| 6 | FVG Mitigation LONG USDJPY | USDJPY | M15 | LuxAlgo FVG | Bullish FVG Mitigation |
+| 7 | FVG Mitigation SHORT USDJPY | USDJPY | M15 | LuxAlgo FVG | Bearish FVG Mitigation |
+| 8 | FVG Mitigation LONG EURUSD | EURUSD | M15 | LuxAlgo FVG | Bullish FVG Mitigation |
+| 9 | FVG Mitigation SHORT EURUSD | EURUSD | M15 | LuxAlgo FVG | Bearish FVG Mitigation |
+| 10 | Sweep LONG GOLD | GOLD | M15 | LuxAlgo Sweeps | Any alert() function call |
+| 11 | Sweep SHORT GOLD | GOLD | M15 | LuxAlgo Sweeps | Any alert() function call |
+| 12 | Sweep LONG USDJPY | USDJPY | M15 | LuxAlgo Sweeps | Any alert() function call |
+| 13 | Sweep SHORT USDJPY | USDJPY | M15 | LuxAlgo Sweeps | Any alert() function call |
+| 14 | Sweep LONG EURUSD | EURUSD | M15 | LuxAlgo Sweeps | Any alert() function call |
+| 15 | Sweep SHORT EURUSD | EURUSD | M15 | LuxAlgo Sweeps | Any alert() function call |
+| 16-20 | *(予備 — 5スロット空き)* | | | | |
 
-> **GOLDとUSDJPYに全シグナル集中**：EURUSDはFVG+カスタムの9アラートで十分。
-> Lorentzian+SweepのEURUSD分は予備スロット（必要に応じて追加）。
+> **v2.0変更**: Lorentzian 4スロットを廃止 → 全3銘柄均等にSweep+FVGカバー。
+> 予備5スロットは将来のインジケータ追加や銘柄追加に使用可能。
+
+> **重要: FVGアラート条件の変更**
+> 旧: 「Bullish FVG」（FVG検出＝ギャップ発生）→ タイミングが早すぎてエッジなし
+> 新: 「Bullish FVG Mitigation」（FVG充填＝価格がギャップを埋めた瞬間）→ 実際のエントリーポイント
+
+> **重要: Sweepアラート条件**
+> Sweepsスクリプトは改修済み（`alert()` でwebhook JSONを自動生成）のため、
+> 条件を **「Any alert() function call」** に設定し、メッセージは**空欄のまま**にする。
 
 ---
 
@@ -88,14 +95,13 @@ Lorentzian Classification
 ### 全インジケータ合計（推定・3銘柄合計）
 
 ```
-カスタム:     8〜16 /週/銘柄 × 3 = 24〜48 /週
-LuxAlgo FVG:  3〜8  /週/銘柄 × 3 = 9〜24  /週
-Sweeps:       2〜5  /週/銘柄 × 3 = 6〜15  /週
-Lorentzian:   5〜10 /週/銘柄 × 2 = 10〜20 /週
+カスタム:         8〜16 /週/銘柄 × 3 = 24〜48 /週
+FVG Mitigation:   2〜5  /週/銘柄 × 3 = 6〜15  /週
+Sweeps:           2〜5  /週/銘柄 × 3 = 6〜15  /週
 
-合計: 約50〜107 シグナル/週
-AI承認率 15〜30% → 約8〜32 トレード/週
-目標: 月30〜80トレード
+合計: 約36〜78 シグナル/週
+AI承認率 15〜25%（confidence≥0.65で厳選） → 約5〜20 トレード/週
+目標: 月20〜60トレード（量より質重視）
 ```
 
 ---
@@ -120,14 +126,13 @@ AI承認率 15〜30% → 約8〜32 トレード/週
 
 1. LuxAlgo - Fair Value Gap
    - 設定: デフォルトのまま（M15足で動作）
+   - ⚠️ **Mitigation Levels**: ON（充填ラインを表示・アラート対象）
    
 2. LuxAlgo - Liquidity Sweeps (Alerts)
-   - Liquidity: 5, Only Wicks: ON, Min Length: 300（GOLDの場合）
-   
-3. Lorentzian Classification - Advanced Trading Dashboard
-   - Neighbors: 8, Settings はデフォルト
+   - Enable Alerts: ON
+   - Liquidity: 5, Only Wicks: ON
 
-4. Q-Trend
+3. Q-Trend
    - Period: 200, ATR: 14（アラート不要・視覚のみ）
 
 ### Step 3: アラート作成
@@ -147,43 +152,39 @@ AI承認率 15〜30% → 約8〜32 トレード/週
 
 #### LuxAlgo FVG のアラート (6個)
 
-各銘柄 × BUY/SELL で6個作成。メッセージは以下をコピペ:
+各銘柄 × LONG/SHORT で6個作成。
 
-**FVG BUY（LONG）:**
+**アラート条件:**
+- LONG: `Fair Value Gap [LuxAlgo]` → **「Bullish FVG Mitigation」**
+- SHORT: `Fair Value Gap [LuxAlgo]` → **「Bearish FVG Mitigation」**
+
+> ⚠️ **「Bullish FVG」ではなく「Bullish FVG Mitigation」を選ぶこと！**
+> FVG検出 = ギャップが生まれた瞬間（情報のみ、エントリーポイントではない）
+> FVG Mitigation = 価格がギャップを埋めた瞬間（反転の高確率ポイント）
+
+**メッセージ（共通テンプレート）:**
+
+FVG Mitigation LONG:
 ```
-{"secret":"YOUR_SECRET_HERE","symbol":"{{ticker}}","direction":"LONG","timeframe":"{{interval}}","h1_trend":"","pattern":"FVG_FILL","price":{{close}},"broker_time":"{{timenow}}","source":"luxalgo_fvg"}
+{"secret":"YOUR_SECRET_HERE","symbol":"{{ticker}}","direction":"LONG","timeframe":"{{interval}}","h1_trend":"","pattern":"FVG_MITIGATION","price":{{close}},"broker_time":"{{timenow}}","source":"luxalgo_fvg"}
 ```
 
-**FVG SELL（SHORT）:**
+FVG Mitigation SHORT:
 ```
-{"secret":"YOUR_SECRET_HERE","symbol":"{{ticker}}","direction":"SHORT","timeframe":"{{interval}}","h1_trend":"","pattern":"FVG_FILL","price":{{close}},"broker_time":"{{timenow}}","source":"luxalgo_fvg"}
+{"secret":"YOUR_SECRET_HERE","symbol":"{{ticker}}","direction":"SHORT","timeframe":"{{interval}}","h1_trend":"","pattern":"FVG_MITIGATION","price":{{close}},"broker_time":"{{timenow}}","source":"luxalgo_fvg"}
 ```
 
 > ⚠️ `YOUR_SECRET_HERE` を実際のWebhook Secretに置換すること
 
 #### LuxAlgo Liquidity Sweeps のアラート (6個)
 
-**Sweep BUY（LONG ─ 安値スイープ後の反転）:**
-```
-{"secret":"YOUR_SECRET_HERE","symbol":"{{ticker}}","direction":"LONG","timeframe":"{{interval}}","h1_trend":"","pattern":"LIQUIDITY_SWEEP","price":{{close}},"broker_time":"{{timenow}}","source":"luxalgo_sweep"}
-```
+改修済みスクリプトが `alert()` でJSON を自動生成するため：
 
-**Sweep SELL（SHORT ─ 高値スイープ後の反転）:**
-```
-{"secret":"YOUR_SECRET_HERE","symbol":"{{ticker}}","direction":"SHORT","timeframe":"{{interval}}","h1_trend":"","pattern":"LIQUIDITY_SWEEP","price":{{close}},"broker_time":"{{timenow}}","source":"luxalgo_sweep"}
-```
+1. 条件: `Liquidity Sweeps [LuxAlgo] (Alerts)` → **「任意のalert()関数の呼び出し」**
+2. メッセージ: **空欄のまま**（スクリプトが自動生成するJSONが送信される）
 
-#### Lorentzian Classification のアラート (4個)
-
-**Lorentzian BUY（LONG）:**
-```
-{"secret":"YOUR_SECRET_HERE","symbol":"{{ticker}}","direction":"LONG","timeframe":"{{interval}}","h1_trend":"","pattern":"LORENTZIAN","price":{{close}},"broker_time":"{{timenow}}","source":"lorentzian"}
-```
-
-**Lorentzian SELL（SHORT）:**
-```
-{"secret":"YOUR_SECRET_HERE","symbol":"{{ticker}}","direction":"SHORT","timeframe":"{{interval}}","h1_trend":"","pattern":"LORENTZIAN","price":{{close}},"broker_time":"{{timenow}}","source":"lorentzian"}
-```
+> 旧方式の手動JSONメッセージは不要。スクリプト側の `f_json()` が
+> symbol, price, direction, source 等を全て含むJSONを自動構築する。
 
 ---
 
@@ -228,7 +229,7 @@ AI承認率 15〜30% → 約8〜32 トレード/週
   "direction": "LONG",
   "timeframe": "15",
   "h1_trend": "",
-  "pattern": "FVG_FILL",
+  "pattern": "FVG_MITIGATION",
   "price": 2650.50,
   "broker_time": "2026-03-05T15:30:00Z",
   "source": "luxalgo_fvg"
@@ -249,9 +250,8 @@ AI承認率 15〜30% → 約8〜32 トレード/週
 | `BREAKOUT` | Custom | ドンチャンチャネルブレイク |
 | `RSI_DIVERGENCE` | Custom | RSIダイバージェンス |
 | `MEAN_REVERSION` | Custom | BB+RSI極値反転 |
-| `FVG_FILL` | LuxAlgo FVG | Fair Value Gap充填 |
+| `FVG_MITIGATION` | LuxAlgo FVG | Fair Value Gap充填（反転ポイント） |
 | `LIQUIDITY_SWEEP` | LuxAlgo Sweeps | 流動性スイープ反転 |
-| `LORENTZIAN` | Lorentzian | ML分類シグナル |
 
 ---
 
@@ -263,17 +263,16 @@ TradingViewレイアウト: 3タブ構成
 Tab 1: GOLD M15
   ├─ AI Trading Signal Generator v1.0
   ├─ LuxAlgo - Fair Value Gap
-  ├─ LuxAlgo - Liquidity Sweeps
-  ├─ Lorentzian Classification
+  ├─ LuxAlgo - Liquidity Sweeps (Alerts)
   └─ Q-Trend
 
 Tab 2: USDJPY M15
-  ├─ (同上5つ)
+  ├─ (同上4つ)
   └─ ※ Q-Trendの設定はGOLDと同じ
 
 Tab 3: EURUSD M15
-  ├─ (同上5つ)
-  └─ ※ Lorentzian/Sweepのアラートは未設定（予備スロット）
+  ├─ (同上4つ)
+  └─ ※ 全インジケータのアラートをフル設定
 ```
 
 ---

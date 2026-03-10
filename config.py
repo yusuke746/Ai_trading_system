@@ -60,8 +60,8 @@ class TradingConfig:
 
     # リスク設定
     MAX_RISK_PER_TRADE_PCT: float = 2.0
-    MAX_DAILY_DRAWDOWN_PCT: float = 6.0
-    MAX_TOTAL_EXPOSURE_PCT: float = 6.0
+    MAX_DAILY_DRAWDOWN_PCT: float = 10.0
+    MAX_TOTAL_EXPOSURE_PCT: float = 10.0
     MAX_POSITIONS: int = 5
     MAX_USD_EXPOSURE: int = 4
     MAX_JPY_EXPOSURE: int = 2
@@ -69,7 +69,7 @@ class TradingConfig:
     # AI設定
     AI_TIMEOUT_MAIN_SEC: int = 90   # gpt-5系推論モデルは思考時間が必要
     AI_TIMEOUT_FAST_SEC: int = 30
-    AI_MIN_CONFIDENCE: float = 0.6
+    AI_MIN_CONFIDENCE: float = 0.65
     AI_MAX_TP_DEVIATION_PCT: float = 5.0
     AI_MAX_RETRIES: int = 3
     AI_RETRY_BACKOFF_SEC: tuple = (2, 5, 10)

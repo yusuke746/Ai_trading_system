@@ -102,8 +102,8 @@ class TestModels:
             direction="LONG",
             price=150.0,
             timeframe="M15",
-            pattern="FVG_FILL",
-            source="luxalgo",
+            pattern="FVG_MITIGATION",
+            source="luxalgo_fvg",
             broker_time="2024-01-15T10:00:00Z",
         )
         assert payload.needs_supplement() is True
@@ -300,11 +300,11 @@ class TestPromptBuilder:
             pos_count=0,
             correlation_alert={"has_alert": False},
             todays_events=[],
-            all_patterns=["BREAKOUT", "FVG_FILL", "LORENTZIAN"],
+            all_patterns=["BREAKOUT", "FVG_MITIGATION", "LIQUIDITY_SWEEP"],
         )
         assert "3戦略が同時発火" in messages[2]["content"]
         assert "BREAKOUT" in messages[2]["content"]
-        assert "FVG_FILL" in messages[2]["content"]
+        assert "FVG_MITIGATION" in messages[2]["content"]
 
     def test_build_entry_prompt_with_mtf(self):
         from ai.prompt_builder import PromptBuilder

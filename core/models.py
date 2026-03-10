@@ -64,7 +64,7 @@ class WebhookPayload(BaseModel):
     """
     TradingViewから受信するWebhook JSON。
     カスタムインジケータは全フィールドを含む。
-    外部インジケータ（LuxAlgo, Lorentzian等）は部分フィールドのみ。
+    外部インジケータ（LuxAlgo FVG, Sweeps等）は部分フィールドのみ。
     不足データは webhook_receiver.py がMT5から補完する。
     """
     secret: str
