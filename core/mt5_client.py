@@ -372,10 +372,11 @@ class MT5Client:
         daily_pnl = 実現損益（今日決済分） + 含み損益（保有中ポジション）
 
         NOTE:
-        - MT5 Pythonの history_deals_get(datetime, datetime) は環境により
-          datetimeの解釈がズレることがあるため、広めの期間を取得し、
-          deal.time (epoch) を XMT に変換して当日分を手動フィルタする。
         - 本メソッドは「実現損益 + 含み損益」を返す。
+        - 実現損益は以下の2段フォールバックで算出し、
+          MT5時刻解釈差による 0 固定化を回避する。
+          1) サーバー時間窓（XMT naivetime）で直接取得
+          2) 広い期間取得 + deal.time(epoch) をXMT日付で手動フィルタ
         """
         async with _mt5_lock:
             if not await self.ensure_connection():
@@ -385,29 +386,44 @@ class MT5Client:
             now_xmt = BrokerTime.now()
             today_start = BrokerTime.today_start()
 
-            # 取得窓は広め（3日）に取り、deal.timeでXMT日付を厳密フィルタする
+            out_by = getattr(mt5, "DEAL_ENTRY_OUT_BY", 3)
+            closing_entries = (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_INOUT, out_by)
+
+            # 1) まずはXMT窓で直接取得（通常はこちらで正しい）
+            realized_primary = 0.0
+            primary_from = today_start.replace(tzinfo=None)
+            primary_to = (now_xmt + timedelta(minutes=5)).replace(tzinfo=None)
+            primary_deals = mt5.history_deals_get(primary_from, primary_to)
+            if primary_deals:
+                for deal in primary_deals:
+                    if deal.entry in closing_entries:
+                        realized_primary += deal.profit + deal.swap + deal.commission
+
+            # 2) フォールバック: 広窓取得 + epoch時刻でXMT当日フィルタ
+            realized_fallback = 0.0
             from_utc = (now_xmt - timedelta(days=3)).astimezone(timezone.utc)
             to_utc = (now_xmt + timedelta(minutes=5)).astimezone(timezone.utc)
-            deals = mt5.history_deals_get(
+            fallback_deals = mt5.history_deals_get(
                 from_utc.replace(tzinfo=None),
                 to_utc.replace(tzinfo=None),
             )
-
-            realized_pnl = 0.0
-            if deals:
-                for deal in deals:
-                    # DEAL_ENTRY_OUT (1) or DEAL_ENTRY_INOUT (2) = 決済取引
-                    if deal.entry not in (1, 2):
+            if fallback_deals:
+                for deal in fallback_deals:
+                    if deal.entry not in closing_entries:
                         continue
-
-                    # epoch -> UTC -> XMT に変換して「今日分のみ」集計
                     deal_xmt = BrokerTime.from_utc(
                         datetime.fromtimestamp(deal.time, timezone.utc)
                     )
-                    if deal_xmt < today_start or deal_xmt > now_xmt + timedelta(minutes=5):
-                        continue
+                    if today_start <= deal_xmt <= now_xmt + timedelta(minutes=5):
+                        realized_fallback += deal.profit + deal.swap + deal.commission
 
-                        realized_pnl += deal.profit + deal.swap + deal.commission
+            # primaryがゼロでもfallbackに値があればfallback採用
+            # それ以外はprimary優先（XMT窓の方が意図に近い）
+            realized_pnl = (
+                realized_fallback
+                if realized_primary == 0.0 and realized_fallback != 0.0
+                else realized_primary
+            )
 
             # ─── 含み損益（保有中ポジション） ───
             positions = mt5.positions_get()
