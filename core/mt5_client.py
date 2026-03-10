@@ -370,18 +370,20 @@ class MT5Client:
         """
         今日の日次損益合計（JPY）。
         daily_pnl = 実現損益（今日決済分） + 含み損益（保有中ポジション）
+
+        NOTE: mt5.history_deals_get() はサーバー時間（XMT = Europe/Athens）で
+        引数を解釈する。UTC変換してはならない。
         """
         async with _mt5_lock:
             if not await self.ensure_connection():
                 return 0.0
 
             # ─── 実現損益（今日XMT 00:00以降の決済分） ───
+            # MT5 APIはサーバー時間(XMT)で解釈するため、UTC変換せずnaiveで渡す
             today_start = BrokerTime.today_start()
-            today_start_utc = BrokerTime.to_utc(today_start)
-
-            # datetime to timestamp for MT5 API
-            from_ts = today_start_utc.replace(tzinfo=None)
-            to_ts = datetime.utcnow() + timedelta(hours=1)
+            from_ts = today_start.replace(tzinfo=None)  # XMT 00:00 as naive
+            now_xmt = BrokerTime.now()
+            to_ts = now_xmt.replace(tzinfo=None) + timedelta(minutes=5)
 
             deals = mt5.history_deals_get(from_ts, to_ts)
 
