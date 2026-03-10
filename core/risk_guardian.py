@@ -7,6 +7,7 @@ core/risk_guardian.py — リスク管理エンジン
 
 import asyncio
 import logging
+from datetime import date
 from typing import Optional
 
 from config import CONFIG
@@ -33,6 +34,7 @@ class RiskGuardian:
         self._thesis_db = None
         self._notifier = None
         self._lock_reason: Optional[str] = None
+        self._locked_on_date: Optional[date] = None
 
     def set_dependencies(self, mt5_client, thesis_db, notifier):
         self._mt5_client = mt5_client
@@ -48,7 +50,16 @@ class RiskGuardian:
     async def check_all_guards(self):
         """30秒ごとに全ガードチェックを実行"""
         if self.status == SystemStatus.LOCKED:
-            return  # LOCKED中は何もしない
+            # 日付が変わったらLOCKEDを自動解除（新しい営業日として再評価）
+            now_date = BrokerTime.now().date()
+            if self._locked_on_date and now_date > self._locked_on_date:
+                self.status = SystemStatus.ACTIVE
+                self._lock_reason = None
+                self._locked_on_date = None
+                await self._notify("🟢 日次リセット: LOCKED → ACTIVE", level="INFO")
+                logger.info("ステータス変更: LOCKED → ACTIVE (日次リセット)")
+            else:
+                return  # LOCKED中は手動解除または日次リセット待ち
 
         try:
             # 週末チェック
@@ -264,6 +275,7 @@ class RiskGuardian:
         logger.critical(f"🔴 サーキットブレーカー発動: {reason}")
         self.status = SystemStatus.LOCKED
         self._lock_reason = reason
+        self._locked_on_date = BrokerTime.now().date()
 
         # 1. 全決済（失敗してもログして継続）
         try:
@@ -298,6 +310,7 @@ class RiskGuardian:
 
         self.status = SystemStatus.ACTIVE
         self._lock_reason = None
+        self._locked_on_date = None
         await self._notify("🟢 手動解除: LOCKED → ACTIVE", level="INFO")
         return "UNLOCKED"
 
