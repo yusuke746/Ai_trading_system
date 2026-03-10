@@ -397,9 +397,18 @@ class MT5Client:
                     "floating_pnl": 0.0,
                     "total_pnl": 0.0,
                     "matched_deals": 0,
+                    "matched_deals_preview": [],
                 }
 
-            realized_pnl, floating_pnl, matched_deals, realized_profit, realized_swap, realized_commission = self._calc_daily_pnl_components_locked()
+            (
+                realized_pnl,
+                floating_pnl,
+                matched_deals,
+                realized_profit,
+                realized_swap,
+                realized_commission,
+                matched_deals_preview,
+            ) = self._calc_daily_pnl_components_locked()
             return {
                 "realized_pnl": realized_pnl,
                 "realized_profit": realized_profit,
@@ -408,9 +417,10 @@ class MT5Client:
                 "floating_pnl": floating_pnl,
                 "total_pnl": realized_pnl + floating_pnl,
                 "matched_deals": matched_deals,
+                "matched_deals_preview": matched_deals_preview,
             }
 
-    def _calc_daily_pnl_components_locked(self) -> tuple[float, float, int, float, float, float]:
+    def _calc_daily_pnl_components_locked(self) -> tuple[float, float, int, float, float, float, list[dict]]:
         """日次PnL内訳を算出（呼び出し元でMT5 lock保持前提）。"""
 
         # ─── 実現損益（今日XMT 00:00以降の決済分） ───
@@ -449,6 +459,7 @@ class MT5Client:
         realized_profit = 0.0
         realized_swap = 0.0
         realized_commission = 0.0
+        matched_deals_preview: list[dict] = []
         if fallback_deals:
             for deal in fallback_deals:
                 if deal.entry not in closing_entries:
@@ -461,6 +472,22 @@ class MT5Client:
                     realized_commission += deal.commission
                     realized_fallback += deal.profit + deal.swap + deal.commission
                     matched_deals += 1
+                    deal_time_xmt = BrokerTime.from_utc(
+                        datetime.fromtimestamp(int(deal.time), timezone.utc)
+                    )
+                    matched_deals_preview.append(
+                        {
+                            "ticket": int(deal.ticket),
+                            "symbol": deal.symbol,
+                            "time_xmt": deal_time_xmt.strftime("%Y-%m-%d %H:%M:%S"),
+                            "entry": int(deal.entry),
+                            "type": int(deal.type),
+                            "profit": round(float(deal.profit), 2),
+                            "swap": round(float(deal.swap), 2),
+                            "commission": round(float(deal.commission), 2),
+                            "net": round(float(deal.profit + deal.swap + deal.commission), 2),
+                        }
+                    )
 
         # 既定はepochフィルタ（fallback）を採用。
         # fallbackが取得不能(None)のときのみprimaryにフォールバックする。
@@ -480,6 +507,7 @@ class MT5Client:
             realized_profit,
             realized_swap,
             realized_commission,
+            matched_deals_preview,
         )
 
     async def get_spread(self, symbol: str) -> float:
