@@ -382,7 +382,7 @@ class MT5Client:
             if not await self.ensure_connection():
                 return 0.0
 
-            realized_pnl, floating_pnl, _, _, _, _ = self._calc_daily_pnl_components_locked()
+            realized_pnl, floating_pnl, _, _, _, _, _ = self._calc_daily_pnl_components_locked()
             return realized_pnl + floating_pnl
 
     async def get_daily_pnl_breakdown(self) -> dict:
