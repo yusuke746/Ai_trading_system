@@ -382,7 +382,7 @@ class MT5Client:
             if not await self.ensure_connection():
                 return 0.0
 
-            realized_pnl, floating_pnl, _ = self._calc_daily_pnl_components_locked()
+            realized_pnl, floating_pnl, _, _, _, _ = self._calc_daily_pnl_components_locked()
             return realized_pnl + floating_pnl
 
     async def get_daily_pnl_breakdown(self) -> dict:
@@ -391,20 +391,26 @@ class MT5Client:
             if not await self.ensure_connection():
                 return {
                     "realized_pnl": 0.0,
+                    "realized_profit": 0.0,
+                    "realized_swap": 0.0,
+                    "realized_commission": 0.0,
                     "floating_pnl": 0.0,
                     "total_pnl": 0.0,
                     "matched_deals": 0,
                 }
 
-            realized_pnl, floating_pnl, matched_deals = self._calc_daily_pnl_components_locked()
+            realized_pnl, floating_pnl, matched_deals, realized_profit, realized_swap, realized_commission = self._calc_daily_pnl_components_locked()
             return {
                 "realized_pnl": realized_pnl,
+                "realized_profit": realized_profit,
+                "realized_swap": realized_swap,
+                "realized_commission": realized_commission,
                 "floating_pnl": floating_pnl,
                 "total_pnl": realized_pnl + floating_pnl,
                 "matched_deals": matched_deals,
             }
 
-    def _calc_daily_pnl_components_locked(self) -> tuple[float, float, int]:
+    def _calc_daily_pnl_components_locked(self) -> tuple[float, float, int, float, float, float]:
         """日次PnL内訳を算出（呼び出し元でMT5 lock保持前提）。"""
 
         # ─── 実現損益（今日XMT 00:00以降の決済分） ───
@@ -440,6 +446,9 @@ class MT5Client:
             to_utc.replace(tzinfo=None),
         )
         matched_deals = 0
+        realized_profit = 0.0
+        realized_swap = 0.0
+        realized_commission = 0.0
         if fallback_deals:
             for deal in fallback_deals:
                 if deal.entry not in closing_entries:
@@ -447,6 +456,9 @@ class MT5Client:
                 if deal.type not in trade_types:
                     continue
                 if day_start_ts <= int(deal.time) <= day_end_ts:
+                    realized_profit += deal.profit
+                    realized_swap += deal.swap
+                    realized_commission += deal.commission
                     realized_fallback += deal.profit + deal.swap + deal.commission
                     matched_deals += 1
 
@@ -461,7 +473,14 @@ class MT5Client:
             for pos in positions:
                 floating_pnl += pos.profit + pos.swap
 
-        return realized_pnl, floating_pnl, matched_deals
+        return (
+            realized_pnl,
+            floating_pnl,
+            matched_deals,
+            realized_profit,
+            realized_swap,
+            realized_commission,
+        )
 
     async def get_spread(self, symbol: str) -> float:
         """現在スプレッド（points単位）"""
