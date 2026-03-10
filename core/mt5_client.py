@@ -431,9 +431,11 @@ class MT5Client:
         closing_entries = (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_INOUT, out_by)
         trade_types = (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL)
 
-        # XMT当日のUnix境界（UTC/XMT変換を都度行わず直接比較）
-        day_start_ts = int(today_start.timestamp())
-        day_end_ts = int((now_xmt + timedelta(minutes=5)).timestamp())
+        # MT5 deal.time は環境によって「XMT壁時計をUTC epochに詰めた値」のように
+        # 振る舞うことがあるため、境界側も同じ壁時計基準で比較する。
+        # 例: XMT 00:00 を 00:00 UTC 相当のtimestampとして扱う。
+        day_start_ts = int(today_start.replace(tzinfo=timezone.utc).timestamp())
+        day_end_ts = int((now_xmt + timedelta(minutes=5)).replace(tzinfo=timezone.utc).timestamp())
 
         # 1) まずはXMT窓で直接取得（通常はこちらで正しい）
         realized_primary = 0.0
@@ -472,9 +474,8 @@ class MT5Client:
                     realized_commission += deal.commission
                     realized_fallback += deal.profit + deal.swap + deal.commission
                     matched_deals += 1
-                    deal_time_xmt = BrokerTime.from_utc(
-                        datetime.fromtimestamp(int(deal.time), timezone.utc)
-                    )
+                    # deal.time と同じ壁時計基準で表示（XMT表示用）
+                    deal_time_xmt = datetime.fromtimestamp(int(deal.time), timezone.utc)
                     matched_deals_preview.append(
                         {
                             "ticket": int(deal.ticket),
