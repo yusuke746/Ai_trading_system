@@ -382,7 +382,7 @@ class MT5Client:
             if not await self.ensure_connection():
                 return 0.0
 
-            realized_pnl, floating_pnl = self._calc_daily_pnl_components_locked()
+            realized_pnl, floating_pnl, _ = self._calc_daily_pnl_components_locked()
             return realized_pnl + floating_pnl
 
     async def get_daily_pnl_breakdown(self) -> dict:
@@ -393,16 +393,18 @@ class MT5Client:
                     "realized_pnl": 0.0,
                     "floating_pnl": 0.0,
                     "total_pnl": 0.0,
+                    "matched_deals": 0,
                 }
 
-            realized_pnl, floating_pnl = self._calc_daily_pnl_components_locked()
+            realized_pnl, floating_pnl, matched_deals = self._calc_daily_pnl_components_locked()
             return {
                 "realized_pnl": realized_pnl,
                 "floating_pnl": floating_pnl,
                 "total_pnl": realized_pnl + floating_pnl,
+                "matched_deals": matched_deals,
             }
 
-    def _calc_daily_pnl_components_locked(self) -> tuple[float, float]:
+    def _calc_daily_pnl_components_locked(self) -> tuple[float, float, int]:
         """日次PnL内訳を算出（呼び出し元でMT5 lock保持前提）。"""
 
         # ─── 実現損益（今日XMT 00:00以降の決済分） ───
@@ -411,6 +413,11 @@ class MT5Client:
 
         out_by = getattr(mt5, "DEAL_ENTRY_OUT_BY", 3)
         closing_entries = (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_INOUT, out_by)
+        trade_types = (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL)
+
+        # XMT当日のUnix境界（UTC/XMT変換を都度行わず直接比較）
+        day_start_ts = int(today_start.timestamp())
+        day_end_ts = int((now_xmt + timedelta(minutes=5)).timestamp())
 
         # 1) まずはXMT窓で直接取得（通常はこちらで正しい）
         realized_primary = 0.0
@@ -419,7 +426,7 @@ class MT5Client:
         primary_deals = mt5.history_deals_get(primary_from, primary_to)
         if primary_deals:
             for deal in primary_deals:
-                if deal.entry in closing_entries:
+                if deal.entry in closing_entries and deal.type in trade_types:
                     realized_primary += deal.profit + deal.swap + deal.commission
 
         # 2) 標準経路: 広窓取得 + epoch時刻でXMT当日フィルタ
@@ -432,15 +439,16 @@ class MT5Client:
             from_utc.replace(tzinfo=None),
             to_utc.replace(tzinfo=None),
         )
+        matched_deals = 0
         if fallback_deals:
             for deal in fallback_deals:
                 if deal.entry not in closing_entries:
                     continue
-                deal_xmt = BrokerTime.from_utc(
-                    datetime.fromtimestamp(deal.time, timezone.utc)
-                )
-                if today_start <= deal_xmt <= now_xmt + timedelta(minutes=5):
+                if deal.type not in trade_types:
+                    continue
+                if day_start_ts <= int(deal.time) <= day_end_ts:
                     realized_fallback += deal.profit + deal.swap + deal.commission
+                    matched_deals += 1
 
         # 既定はepochフィルタ（fallback）を採用。
         # fallbackが取得不能(None)のときのみprimaryにフォールバックする。
@@ -453,7 +461,7 @@ class MT5Client:
             for pos in positions:
                 floating_pnl += pos.profit + pos.swap
 
-        return realized_pnl, floating_pnl
+        return realized_pnl, floating_pnl, matched_deals
 
     async def get_spread(self, symbol: str) -> float:
         """現在スプレッド（points単位）"""
