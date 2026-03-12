@@ -23,6 +23,10 @@ from ai.prompt_builder import PromptBuilder
 
 logger = logging.getLogger(__name__)
 
+PARTIAL_CLOSE_MAX_COUNT_PER_TRADE: int = 1
+PARTIAL_CLOSE_MIN_VOLUME: float = 0.20
+PARTIAL_CLOSE_MIN_REMAINING_VOLUME: float = 0.10
+
 
 class PositionMonitor:
     """ポジション監視・H1バッチ査定エンジン"""
@@ -207,20 +211,9 @@ class PositionMonitor:
 
         ticket = pos_data["ticket"]
 
-        # レビューログ保存
+        # レビューログ用の値（アクション補正後に保存）
         old_tp = pos_data.get("initial_tp")
         new_tp = instruction.get("new_tp")
-
-        await self._thesis_db.save_review(
-            trade_id=trade_id,
-            thesis_status=thesis_status,
-            action=action,
-            old_tp=old_tp,
-            new_tp=new_tp,
-            reasoning=reasoning,
-            ai_model_used=CONFIG.MODEL_MAIN,
-            tokens_used=0,
-        )
 
         # アクション実行
         if action == "HOLD":
@@ -235,15 +228,58 @@ class PositionMonitor:
 
         elif action == "PARTIAL_CLOSE":
             pct = instruction.get("close_percentage", 50)
-            result = await self._mt5_client.close_position(ticket, percentage=pct)
-            if result and result.success:
-                logger.info(f"部分決済: {trade_id[:8]} {pct}%")
+            current_volume = float(pos_data.get("volume", 0) or 0)
+            partial_count = await self._thesis_db.get_partial_close_count(trade_id)
+            fallback_action = None
+
+            if partial_count >= PARTIAL_CLOSE_MAX_COUNT_PER_TRADE:
+                logger.info(f"部分決済回数上限でスキップ: {trade_id[:8]} count={partial_count}")
+                fallback_action = "UPDATE_TP" if new_tp else "HOLD"
+            elif current_volume < PARTIAL_CLOSE_MIN_VOLUME:
+                logger.info(
+                    f"ロットが小さすぎるため部分決済スキップ: {trade_id[:8]} volume={current_volume}"
+                )
+                fallback_action = "UPDATE_TP" if new_tp else "HOLD"
+            else:
+                remaining_volume = round(current_volume * max(0.0, (100 - pct)) / 100, 2)
+                if remaining_volume < PARTIAL_CLOSE_MIN_REMAINING_VOLUME:
+                    logger.info(
+                        f"残ロット最小閾値未満で部分決済スキップ: {trade_id[:8]} remain={remaining_volume}"
+                    )
+                    fallback_action = "UPDATE_TP" if new_tp else "HOLD"
+                else:
+                    result = await self._mt5_client.close_position(ticket, percentage=pct)
+                    if result and result.success:
+                        logger.info(f"部分決済: {trade_id[:8]} {pct}%")
+                        await self._move_sl_to_breakeven_if_needed(pos_data)
+                    else:
+                        logger.warning(f"部分決済失敗: {trade_id[:8]} {pct}%")
+
+            if fallback_action == "UPDATE_TP" and new_tp:
+                success = await self._mt5_client.modify_position(ticket, new_tp=new_tp)
+                if success:
+                    await self._thesis_db.update_thesis_tp(trade_id, new_tp)
+                    logger.info(f"部分決済代替でTP更新: {trade_id[:8]} → {new_tp}")
+                action = "UPDATE_TP"
+            elif fallback_action == "HOLD":
+                action = "HOLD"
 
         elif action == "FULL_CLOSE":
             result = await self._mt5_client.close_position(ticket)
             if result and result.success:
                 await self._finalize_trade(trade_id, pos_data, "THESIS_BROKEN")
                 logger.info(f"全決済: {trade_id[:8]}")
+
+        await self._thesis_db.save_review(
+            trade_id=trade_id,
+            thesis_status=thesis_status,
+            action=action,
+            old_tp=old_tp,
+            new_tp=new_tp,
+            reasoning=reasoning,
+            ai_model_used=CONFIG.MODEL_MAIN,
+            tokens_used=0,
+        )
 
         return {
             "trade_id": trade_id,
@@ -252,6 +288,33 @@ class PositionMonitor:
             "action": action,
             "reasoning": reasoning[:80],
         }
+
+    async def _move_sl_to_breakeven_if_needed(self, pos_data: dict):
+        """部分決済後、必要ならSLを建値に引き上げる"""
+        trade_id = pos_data.get("trade_id", "")
+        ticket = pos_data.get("ticket")
+        entry_price = pos_data.get("entry_price")
+        current_sl = pos_data.get("emergency_sl")
+        direction = pos_data.get("direction")
+
+        if not ticket or entry_price is None or direction not in ("LONG", "SHORT"):
+            return
+
+        needs_move = False
+        if direction == "LONG":
+            needs_move = current_sl is None or current_sl < entry_price
+        else:
+            needs_move = current_sl is None or current_sl > entry_price
+
+        if not needs_move:
+            return
+
+        success = await self._mt5_client.modify_position(ticket, new_sl=entry_price)
+        if success:
+            await self._thesis_db.update_thesis_sl(trade_id, entry_price)
+            logger.info(f"建値SL適用: {trade_id[:8]} ticket={ticket} sl={entry_price}")
+        else:
+            logger.warning(f"建値SL適用失敗: {trade_id[:8]} ticket={ticket}")
 
     async def _finalize_trade(
         self, trade_id: str, pos_data: dict, exit_reason: str
@@ -317,9 +380,9 @@ class PositionMonitor:
                     entry_tp_distance = abs(tp - pos.open_price)
 
                     # TP 80%到達
-                    if entry_tp_distance > 0 and tp_distance < entry_tp_distance * 0.2:
+                    if entry_tp_distance > 0 and tp_distance < entry_tp_distance * 0.3:
                         await self._trigger_layer2(
-                            pos, thesis, "TP近接80%"
+                            pos, thesis, "TP近接70%"
                         )
 
                 # 急激な逆行チェック（ATRベース）
@@ -327,9 +390,9 @@ class PositionMonitor:
                 if atr and atr > 0:
                     # 含み損がATR×2以上
                     loss_distance = abs(current - pos.open_price)
-                    if pos.profit < 0 and loss_distance > atr * 1.8:
+                    if pos.profit < 0 and loss_distance > atr * 1.5:
                         await self._trigger_layer2(
-                            pos, thesis, "急激な逆行（ATR×1.8超）"
+                            pos, thesis, "急激な逆行（ATR×1.5超）"
                         )
 
         except Exception as e:

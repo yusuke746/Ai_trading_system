@@ -310,6 +310,24 @@ class ThesisDB:
             (new_tp, now, trade_id),
         )
 
+    async def update_thesis_sl(self, trade_id: str, new_sl: float) -> bool:
+        """ThesisのSLを更新"""
+        now = BrokerTime.now_str()
+        return await self.write(
+            "UPDATE thesis SET emergency_sl = ?, updated_at = ? WHERE trade_id = ?",
+            (new_sl, now, trade_id),
+        )
+
+    async def get_partial_close_count(self, trade_id: str) -> int:
+        """指定trade_idの部分決済実行回数を取得"""
+        row = await self.read_one(
+            "SELECT COUNT(*) FROM review_log WHERE trade_id = ? AND action = 'PARTIAL_CLOSE'",
+            (trade_id,),
+        )
+        if not row:
+            return 0
+        return int(row[0] or 0)
+
     # ──────────── Review Log ────────────
 
     async def save_review(

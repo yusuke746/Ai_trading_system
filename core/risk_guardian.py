@@ -10,6 +10,8 @@ import logging
 from datetime import date
 from typing import Optional
 
+import MetaTrader5 as mt5
+
 from config import CONFIG
 from core.broker_time import BrokerTime
 from core.models import Direction, SystemStatus
@@ -203,18 +205,105 @@ class RiskGuardian:
         if balance <= 0:
             return 0.0
 
-        # 簡易計算: 各ポジションのpotential lossの合計 / balance
+        if not await self._mt5_client.ensure_connection():
+            logger.warning("総エクスポージャー計算: MT5未接続のため0.0を返却")
+            return 0.0
+
+        # 各ポジションのSL到達時想定損失（口座通貨）を集計
         total_risk = 0.0
         for pos in positions:
             if pos.sl and pos.sl > 0:
-                risk_price = abs(pos.open_price - pos.sl) * pos.volume
-                # 大雑把なJPY換算（正確さより安全側に）
-                if "JPY" in pos.symbol:
-                    total_risk += risk_price * 100  # pips × lot × 100
-                else:
-                    total_risk += risk_price * 100000 * 150  # 仮のJPYレート
+                order_type = (
+                    mt5.ORDER_TYPE_BUY
+                    if pos.direction == Direction.LONG
+                    else mt5.ORDER_TYPE_SELL
+                )
+
+                expected_pnl = mt5.order_calc_profit(
+                    order_type,
+                    pos.symbol,
+                    pos.volume,
+                    pos.open_price,
+                    pos.sl,
+                )
+
+                if expected_pnl is not None:
+                    total_risk += abs(expected_pnl)
+                    continue
+
+                logger.warning(
+                    f"order_calc_profit失敗: symbol={pos.symbol} ticket={pos.ticket} -> フォールバック計算"
+                )
+                fallback_risk = self._estimate_risk_fallback(pos.symbol, pos.volume, pos.open_price, pos.sl)
+                total_risk += fallback_risk
 
         return (total_risk / balance) * 100
+
+    def _estimate_risk_fallback(
+        self,
+        symbol: str,
+        volume: float,
+        open_price: float,
+        sl_price: float,
+    ) -> float:
+        """order_calc_profit失敗時のフォールバック（契約サイズベース）"""
+        symbol_info = mt5.symbol_info(symbol)
+        if not symbol_info:
+            logger.warning(f"symbol_info取得失敗: {symbol}")
+            return 0.0
+
+        contract_size = float(symbol_info.trade_contract_size or 0)
+        if contract_size <= 0:
+            logger.warning(f"contract_size不正: {symbol} size={contract_size}")
+            return 0.0
+
+        price_diff = abs(open_price - sl_price)
+        risk_quote = price_diff * volume * contract_size
+        quote_ccy = self._infer_quote_currency(symbol)
+        quote_to_jpy = self._get_quote_to_jpy_rate(quote_ccy)
+
+        return risk_quote * quote_to_jpy
+
+    @staticmethod
+    def _infer_quote_currency(symbol: str) -> str:
+        """シンボルから見積用のクオート通貨を推定"""
+        normalized = symbol.upper()
+
+        if "JPY" in normalized:
+            return "JPY"
+
+        if normalized in ("GOLD", "XAUUSD", "XAUUSD.") or normalized.startswith("XAU"):
+            return "USD"
+
+        clean = "".join(ch for ch in normalized if ch.isalpha())
+        if len(clean) >= 6:
+            return clean[-3:]
+
+        return "USD"
+
+    @staticmethod
+    def _get_quote_to_jpy_rate(quote_ccy: str) -> float:
+        """クオート通貨→JPY換算レートを取得（失敗時は安全側の推定値）"""
+        if quote_ccy == "JPY":
+            return 1.0
+
+        direct_symbol = f"{quote_ccy}JPY"
+        tick = mt5.symbol_info_tick(direct_symbol)
+        if tick and tick.bid > 0:
+            return float(tick.bid)
+
+        inverse_symbol = f"JPY{quote_ccy}"
+        tick = mt5.symbol_info_tick(inverse_symbol)
+        if tick and tick.ask > 0:
+            return 1.0 / float(tick.ask)
+
+        if quote_ccy == "USD":
+            usd_jpy = mt5.symbol_info_tick("USDJPY")
+            if usd_jpy and usd_jpy.bid > 0:
+                return float(usd_jpy.bid)
+
+        logger.warning(f"JPY換算レート取得失敗: {quote_ccy} -> 150.0で代替")
+        return 150.0
 
     # ──────────── 相関アラート ────────────
 

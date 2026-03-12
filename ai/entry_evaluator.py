@@ -598,21 +598,44 @@ class EntryEvaluator:
         )
 
         recheck_model = CONFIG.WAIT_RECHECK_MODEL
+        result = None
+
+        # 試行1: web_search付き再評価（WAIT理由の解消確認を優先）
         try:
             response = await asyncio.wait_for(
-                self._call_ai(recheck_model, messages),
-                timeout=CONFIG.AI_TIMEOUT_FAST_SEC,
+                self._call_ai(
+                    recheck_model,
+                    messages,
+                    tools=[{
+                        "type": CONFIG.WEB_SEARCH_TOOL_TYPE,
+                        "search_context_size": CONFIG.WEB_SEARCH_CONTEXT_SIZE,
+                    }],
+                ),
+                timeout=CONFIG.AI_TIMEOUT_FAST_SEC + WEB_SEARCH_TIMEOUT_SEC,
             )
             if response:
                 result = self._parse_ai_response(response)
-            else:
-                result = None
         except asyncio.TimeoutError:
-            logger.warning(f"WAIT再評価タイムアウト: {symbol}")
-            result = None
+            logger.warning(f"WAIT再評価(web_search)タイムアウト: {symbol}")
         except Exception as e:
-            logger.warning(f"WAIT再評価エラー: {symbol} - {e}")
-            result = None
+            logger.warning(f"WAIT再評価(web_search)エラー: {symbol} - {e}")
+
+        # 試行2: web_searchなしフォールバック
+        if not result:
+            try:
+                response = await asyncio.wait_for(
+                    self._call_ai(recheck_model, messages),
+                    timeout=CONFIG.AI_TIMEOUT_FAST_SEC,
+                )
+                if response:
+                    result = self._parse_ai_response(response)
+                    if result:
+                        result["_web_search_failed"] = True
+                        logger.info(f"WAIT再評価: web_searchなしで判定継続 {symbol}")
+            except asyncio.TimeoutError:
+                logger.warning(f"WAIT再評価(フォールバック)タイムアウト: {symbol}")
+            except Exception as e:
+                logger.warning(f"WAIT再評価(フォールバック)エラー: {symbol} - {e}")
 
         if not result:
             entry["retry_count"] += 1
