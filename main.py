@@ -225,17 +225,28 @@ async def startup_checks() -> bool:
 
     # 3. 起動時リカバリー
     logger.info("[3/10] 起動時リカバリー...")
+    mt5_ready = await mt5_client.ensure_connection()
     positions = await mt5_client.get_all_positions()
     active_tickets = [p.ticket for p in positions]
     orphaned = await thesis_db.get_orphaned_theses(active_tickets)
     if orphaned:
-        for o in orphaned:
+        for o in orphaned[:5]:
             logger.warning(f"  ⚠️ 孤立Thesis検出: {o['trade_id'][:8]} ticket={o['ticket']}")
-        await notifier.send(
-            f"⚠️ 起動時リカバリー: {len(orphaned)}件の孤立Thesis検出\n"
-            f"MT5にポジションなし → 手動確認推奨",
-            level="WARNING",
-        )
+        if len(orphaned) > 5:
+            logger.warning(f"  ...他 {len(orphaned) - 5} 件")
+
+        if mt5_ready:
+            closed_count = await thesis_db.close_orphaned_theses(active_tickets)
+            await notifier.send(
+                f"⚠️ 起動時リカバリー: 孤立Thesis {len(orphaned)}件検出 / {closed_count}件をCLOSED化",
+                level="WARNING",
+            )
+        else:
+            await notifier.send(
+                f"⚠️ 起動時リカバリー: 孤立Thesis {len(orphaned)}件検出\n"
+                f"MT5接続不安定のため自動整理をスキップ（手動確認推奨）",
+                level="WARNING",
+            )
     # 未追跡ポジション
     tracked_tickets = set()
     theses = await thesis_db.get_active_theses()

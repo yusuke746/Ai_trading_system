@@ -532,3 +532,21 @@ class ThesisDB:
         active = await self.get_active_theses()
         orphaned = [t for t in active if t["ticket"] not in active_tickets]
         return orphaned
+
+    async def close_orphaned_theses(self, active_tickets: list[int]) -> int:
+        """孤立Thesisを一括でCLOSED化し、更新件数を返す"""
+        orphaned = await self.get_orphaned_theses(active_tickets)
+        if not orphaned:
+            return 0
+
+        now = BrokerTime.now_str()
+        closed_count = 0
+        for thesis in orphaned:
+            success = await self.write(
+                "UPDATE thesis SET status = 'CLOSED', updated_at = ? WHERE trade_id = ? AND status = 'ACTIVE'",
+                (now, thesis["trade_id"]),
+            )
+            if success:
+                closed_count += 1
+
+        return closed_count
