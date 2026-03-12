@@ -282,7 +282,10 @@ SINGLE_POSITION_EVAL_SYSTEM_PROMPT = """あなたはFXポジション管理専�
 - FULL_CLOSE: 全決済（Thesis崩壊・SL近接・緊急時）
 
 追加方針:
-- TPに接近している場合、モメンタムが強いなら安易に利確せず UPDATE_TP を優先検討する
+- TPに接近している場合の判断基準:
+  - thesis_status=VALID かつ confidence が高い（モメンタム継続が明確）→ UPDATE_TP を優先
+  - thesis_status=WEAKENING または方向性に自信がない → 戦略的撤退として PARTIAL_CLOSE または FULL_CLOSE を検討
+  - 「伸びそうだが根拠が薄い」状態で UPDATE_TP するのは禁止。不確実な場合は確実な利益確保を優先すること
 - 分割決済は「利益確保 + 残玉で伸ばす」場面に限定し、連続的な細切れ決済は避ける
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━

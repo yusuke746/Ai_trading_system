@@ -512,6 +512,19 @@ class EntryEvaluator:
 
     # ──────────── WAITハンドリング ────────────
 
+    def _schedule_next_recheck(self, symbol: str) -> None:
+        """WAIT再チェックジョブを5分後にスケジュール（既存ジョブを上書き）"""
+        if self._scheduler:
+            recheck_time = BrokerTime.now() + timedelta(seconds=WAIT_RECHECK_INTERVAL_SEC)
+            self._scheduler.add_job(
+                self._recheck_wait,
+                "date",
+                run_date=recheck_time,
+                args=[symbol],
+                id=f"wait_recheck_{symbol}",
+                replace_existing=True,
+            )
+
     async def _handle_wait_decision(
         self, symbol: str, ai_response: dict, webhook_data: dict
     ):
@@ -529,19 +542,18 @@ class EntryEvaluator:
         )
 
         # 5分後に再チェックをスケジュール
-        if self._scheduler:
-            recheck_time = BrokerTime.now() + timedelta(seconds=WAIT_RECHECK_INTERVAL_SEC)
-            self._scheduler.add_job(
-                self._recheck_wait,
-                "date",
-                run_date=recheck_time,
-                args=[symbol],
-                id=f"wait_recheck_{symbol}",
-                replace_existing=True,
-            )
+        self._schedule_next_recheck(symbol)
 
     async def _recheck_wait(self, symbol: str):
-        """WAIT中のシグナルをAI再評価で再チェック（gpt-5-nano使用）"""
+        """WAIT中のシグナルをAI再評価で再チェック
+
+        _eval_lock を取得してから実処理を行うため、新規エントリー評価と競合しない。
+        """
+        async with self._eval_lock:
+            await self._recheck_wait_inner(symbol)
+
+    async def _recheck_wait_inner(self, symbol: str):
+        """_recheck_waitの実処理（_eval_lock内で実行）"""
         entry = _wait_queue.get(symbol)
         if not entry:
             return
@@ -568,16 +580,38 @@ class EntryEvaluator:
                     f"⏳ WAIT最終破棄: {symbol}（ガード条件未解除: {block_reason}）",
                     level="INFO",
                 )
+            else:
+                # 次回チェックを再スケジュール（ジョブは1回限りのため必須）
+                self._schedule_next_recheck(symbol)
             return
 
         # Step 2: 現在価格取得
         try:
             current_price = await self._mt5_client.get_current_price(symbol, direction)
-        except Exception:
-            logger.warning(f"WAIT再評価: {symbol} 現在価格取得失敗")
+        except Exception as e:
+            logger.warning(f"WAIT再評価: {symbol} 現在価格取得失敗: {e}", exc_info=True)
+            entry["retry_count"] += 1
+            if entry["retry_count"] >= WAIT_MAX_RETRIES:
+                del _wait_queue[symbol]
+                await self._notifier.send(
+                    f"⏳ WAIT最終破棄: {symbol}（価格取得失敗）",
+                    level="WARNING",
+                )
+            else:
+                self._schedule_next_recheck(symbol)
             return
 
-        if not current_price:
+        if current_price is None:
+            logger.warning(f"WAIT再評価: {symbol} 現在価格がNone")
+            entry["retry_count"] += 1
+            if entry["retry_count"] >= WAIT_MAX_RETRIES:
+                del _wait_queue[symbol]
+                await self._notifier.send(
+                    f"⏳ WAIT最終破棄: {symbol}（価格取得None）",
+                    level="WARNING",
+                )
+            else:
+                self._schedule_next_recheck(symbol)
             return
 
         # Step 3: MTFデータ取得（取得失敗は無視）
@@ -645,6 +679,8 @@ class EntryEvaluator:
                     f"⏳ WAIT最終破棄: {symbol}（AI再評価失敗）",
                     level="INFO",
                 )
+            else:
+                self._schedule_next_recheck(symbol)
             return
 
         decision = result.get("decision", "REJECT")

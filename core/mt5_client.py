@@ -525,6 +525,20 @@ class MT5Client:
             spread_price = tick.ask - tick.bid
             return spread_price / info.point if info.point > 0 else 9999.0
 
+    async def get_current_price(self, symbol: str, direction: str) -> Optional[float]:
+        """現在の取引価格を取得（LONG/BUYはask、SHORT/SELLはbid）"""
+        async with _mt5_lock:
+            if not await self.ensure_connection():
+                return None
+            tick = mt5.symbol_info_tick(symbol)
+            if tick is None:
+                logger.warning(f"symbol_info_tick取得失敗: {symbol}")
+                return None
+            if direction.upper() in ("LONG", "BUY"):
+                return float(tick.ask)
+            else:
+                return float(tick.bid)
+
     async def get_ohlcv(
         self, symbol: str, timeframe: int, count: int = 100
     ) -> Optional[pd.DataFrame]:
