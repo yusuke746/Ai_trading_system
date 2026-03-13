@@ -155,6 +155,7 @@ H1_SYSTEM_PROMPT = """あなたはFXポジション管理専門のAIです。
 5. 保有時間が長すぎないか（8時間以上はWEAKENING要因）
 6. ロンドン時間（09:00-12:00 XMT）で建てたポジションが NEW_YORK 開始（16:00 XMT）時点で含み益が乏しい場合、優位性低下として WEAKENING 判定を強める
 7. セッションを跨ぐ際にボラティリティが低下し、thesisの伸びしろが縮小した場合は PARTIAL_CLOSE または FULL_CLOSE を優先検討する
+8. TIME_STOP: 保有時間が長いのに進展が乏しい場合は、価格目標未到達でも戦略的撤退（FULL_CLOSE）を検討する
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【アクション定義】
@@ -164,9 +165,19 @@ H1_SYSTEM_PROMPT = """あなたはFXポジション管理専門のAIです。
 - PARTIAL_CLOSE: 利益が十分に乗り、勢いが鈍化した場合に一度だけ実行。2回目以降の分割決済は非推奨。
 - FULL_CLOSE: 全決済。Thesis崩壊・SL近接・緊急時。close_percentage=100。
 
+重要制約:
+- previous_action が PARTIAL_CLOSE の場合、action=PARTIAL_CLOSE は選択禁止。
+- その場合は HOLD / UPDATE_TP / FULL_CLOSE のいずれかを選択すること。
+
 運用原則:
 - 利が伸びている局面では、安易な分割決済より UPDATE_TP を優先する
 - 分割決済を選ぶ場合でも、残ポジションは建値以上の保護（Breakeven）を意識し、利を伸ばす余地を残す
+- TIME_STOPの目安:
+    - hold_hours >= 8 かつ PnLの伸びが鈍化している場合は WEAKENING を強める
+    - hold_hours >= 12 で thesisの進展が乏しい場合は FULL_CLOSE を積極検討
+- 分割エグジット方針（現行実装整合）:
+    - 初回の防御的利確（TP50到達での部分利確）後、残ポジションは UPDATE_TP または FULL_CLOSE で管理する
+    - 連続的な多段分割（1/3, 1/3, 1/3 など）は現行では想定しない
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【出力JSONスキーマ】
@@ -272,6 +283,7 @@ SINGLE_POSITION_EVAL_SYSTEM_PROMPT = """あなたはFXポジション管理専�
 2. Thesis前提崩壊（WEAKENING）→ 分割決済検討
 3. 価格が順調に推移 → TPトレーリング
 4. 保有時間が長すぎる（8時間以上）→ WEAKENING要因
+5. TIME_STOP: 保有時間が長いのに価格進展が乏しい場合、価格目標未達でも撤退を検討
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【アクション定義】
@@ -281,12 +293,19 @@ SINGLE_POSITION_EVAL_SYSTEM_PROMPT = """あなたはFXポジション管理専�
 - PARTIAL_CLOSE: 分割決済（close_percentage=50推奨）
 - FULL_CLOSE: 全決済（Thesis崩壊・SL近接・緊急時）
 
+重要制約:
+- previous_action が PARTIAL_CLOSE の場合、action=PARTIAL_CLOSE は選択禁止。
+- その場合は HOLD / UPDATE_TP / FULL_CLOSE のいずれかを選択すること。
+
 追加方針:
 - TPに接近している場合の判断基準:
   - thesis_status=VALID かつ confidence が高い（モメンタム継続が明確）→ UPDATE_TP を優先
   - thesis_status=WEAKENING または方向性に自信がない → 戦略的撤退として PARTIAL_CLOSE または FULL_CLOSE を検討
   - 「伸びそうだが根拠が薄い」状態で UPDATE_TP するのは禁止。不確実な場合は確実な利益確保を優先すること
 - 分割決済は「利益確保 + 残玉で伸ばす」場面に限定し、連続的な細切れ決済は避ける
+- タイムストップ指針:
+    - hold_hours >= 8 で高値/安値更新が乏しく、thesisの伸びしろが縮小しているなら FULL_CLOSE を検討
+    - hold_hours >= 12 で改善が見られない場合、HOLDより撤退を優先
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【出力JSONスキーマ】
@@ -496,6 +515,7 @@ class PromptBuilder:
                 f"\n---\n"
                 f"trade_id: {pos.get('trade_id', 'N/A')}\n"
                 f"symbol: {pos.get('symbol')} {pos.get('direction')}\n"
+                f"previous_action: {pos.get('previous_action', 'NONE')}\n"
                 f"entry_price: {pos.get('entry_price')}\n"
                 f"current_price: {pos.get('current_price')}\n"
                 f"current_tp: {pos.get('initial_tp')}\n"
@@ -592,6 +612,7 @@ class PromptBuilder:
             f"一次審査の判断: {nano_reason}\n\n"
             f"trade_id: {pos_data.get('trade_id', 'N/A')}\n"
             f"symbol: {pos_data.get('symbol')} {pos_data.get('direction')}\n"
+            f"previous_action: {pos_data.get('previous_action', 'NONE')}\n"
             f"entry_price: {pos_data.get('entry_price')}\n"
             f"current_price: {pos_data.get('current_price')}\n"
             f"current_tp: {pos_data.get('initial_tp')}\n"

@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 PARTIAL_CLOSE_MAX_COUNT_PER_TRADE: int = 1
 PARTIAL_CLOSE_MIN_VOLUME: float = 0.20
 PARTIAL_CLOSE_MIN_REMAINING_VOLUME: float = 0.10
+BREAKEVEN_BUFFER_PIPS: float = 1.0
 
 
 class PositionMonitor:
@@ -64,6 +65,11 @@ class PositionMonitor:
             positions_data = self._merge_positions_theses(positions, theses)
             if not positions_data:
                 return
+
+            # 各ポジションの直近アクションを補完（プロンプトで再PARTIAL_CLOSE抑止に利用）
+            for pos_data in positions_data:
+                last_action = await self._thesis_db.get_last_review_action(pos_data["trade_id"])
+                pos_data["previous_action"] = last_action or "NONE"
 
             # AI呼び出し
             session = BrokerTime.get_session()
@@ -290,31 +296,94 @@ class PositionMonitor:
         }
 
     async def _move_sl_to_breakeven_if_needed(self, pos_data: dict):
-        """部分決済後、必要ならSLを建値に引き上げる"""
+        """部分決済後、必要ならSLを建値+α（BE+1pip）に引き上げる"""
         trade_id = pos_data.get("trade_id", "")
         ticket = pos_data.get("ticket")
         entry_price = pos_data.get("entry_price")
         current_sl = pos_data.get("emergency_sl")
         direction = pos_data.get("direction")
+        symbol = pos_data.get("symbol", "")
 
         if not ticket or entry_price is None or direction not in ("LONG", "SHORT"):
             return
 
+        point = 0.001 if "JPY" in symbol else 0.00001
+        if symbol == "GOLD":
+            point = 0.01
+        breakeven_buffer = point * 10 * BREAKEVEN_BUFFER_PIPS
+
+        if direction == "LONG":
+            target_sl = entry_price + breakeven_buffer
+        else:
+            target_sl = entry_price - breakeven_buffer
+
         needs_move = False
         if direction == "LONG":
-            needs_move = current_sl is None or current_sl < entry_price
+            needs_move = current_sl is None or current_sl < target_sl
         else:
-            needs_move = current_sl is None or current_sl > entry_price
+            needs_move = current_sl is None or current_sl > target_sl
 
         if not needs_move:
             return
 
-        success = await self._mt5_client.modify_position(ticket, new_sl=entry_price)
+        success = await self._mt5_client.modify_position(ticket, new_sl=target_sl)
         if success:
-            await self._thesis_db.update_thesis_sl(trade_id, entry_price)
-            logger.info(f"建値SL適用: {trade_id[:8]} ticket={ticket} sl={entry_price}")
+            await self._thesis_db.update_thesis_sl(trade_id, target_sl)
+            logger.info(f"BE+α SL適用: {trade_id[:8]} ticket={ticket} sl={target_sl}")
         else:
-            logger.warning(f"建値SL適用失敗: {trade_id[:8]} ticket={ticket}")
+            logger.warning(f"BE+α SL適用失敗: {trade_id[:8]} ticket={ticket}")
+
+    async def _execute_tp50_defensive_action(self, pos, thesis: dict):
+        """TP50%到達時の機械的防御アクション: 50%利確 + BE+α"""
+        trade_id = thesis.get("trade_id", f"unknown_{pos.ticket}")
+
+        point = 0.001 if "JPY" in pos.symbol else 0.00001
+        if pos.symbol == "GOLD":
+            point = 0.01
+        pnl_pips = (pos.current_price - pos.open_price) / (point * 10)
+        if pos.direction == Direction.SHORT:
+            pnl_pips = -pnl_pips
+
+        hold_hours = 0
+        if pos.open_time:
+            hold_hours = (BrokerTime.now() - pos.open_time).total_seconds() / 3600
+
+        pos_data = {
+            "trade_id": trade_id,
+            "ticket": pos.ticket,
+            "symbol": pos.symbol,
+            "direction": pos.direction.value,
+            "entry_price": pos.open_price,
+            "current_price": pos.current_price,
+            "initial_tp": thesis.get("initial_tp", pos.tp),
+            "emergency_sl": thesis.get("emergency_sl", pos.sl),
+            "pnl_pips": pnl_pips,
+            "hold_hours": hold_hours,
+            "thesis_text": thesis.get("thesis_text", ""),
+            "invalidation": thesis.get("invalidation", []),
+            "market_regime": thesis.get("market_regime", "UNKNOWN"),
+            "profit_jpy": pos.profit,
+            "volume": pos.volume,
+        }
+
+        instruction = {
+            "trade_id": trade_id,
+            "thesis_status": "VALID",
+            "action": "PARTIAL_CLOSE",
+            "close_percentage": 50,
+            "reasoning": "TP近接50%到達のため機械的に50%利確し、残ポジションはBE+αで保護",
+            "urgency": "NORMAL",
+        }
+
+        result = await self._execute_position_action(instruction, [pos_data])
+        if result and result.get("action") == "PARTIAL_CLOSE":
+            await self._notifier.send(
+                f"🛡 TP50防御実行: {pos.symbol} {pos.direction.value}\n"
+                f"アクション: 50%利確 + BE+α\n"
+                f"PnL: {pnl_pips:+.1f}pips\n"
+                f"🆔 {trade_id[:8]}",
+                level="INFO",
+            )
 
     async def _finalize_trade(
         self, trade_id: str, pos_data: dict, exit_reason: str
@@ -379,11 +448,9 @@ class PositionMonitor:
                     tp_distance = abs(tp - current)
                     entry_tp_distance = abs(tp - pos.open_price)
 
-                    # TP 50%到達 → nano一次審査をスキップして直接精密評価
+                    # TP 50%到達 → AIを介さず機械的に50%利確 + BE+α保護
                     if entry_tp_distance > 0 and tp_distance <= entry_tp_distance * 0.5:
-                        await self._trigger_layer2(
-                            pos, thesis, "TP近接50%", use_nano_triage=False
-                        )
+                        await self._execute_tp50_defensive_action(pos, thesis)
 
                 # 急激な逆行チェック（ATRベース）
                 atr = self._get_thesis_atr(thesis)
@@ -476,6 +543,7 @@ class PositionMonitor:
                 "market_regime": thesis.get("market_regime", "UNKNOWN"),
                 "profit_jpy": pos.profit,
                 "volume": pos.volume,
+                "previous_action": (await self._thesis_db.get_last_review_action(trade_id)) or "NONE",
             }
 
             session = BrokerTime.get_session()

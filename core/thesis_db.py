@@ -328,6 +328,16 @@ class ThesisDB:
             return 0
         return int(row[0] or 0)
 
+    async def get_last_review_action(self, trade_id: str) -> Optional[str]:
+        """指定trade_idの直近レビューアクションを取得"""
+        row = await self.read_one(
+            "SELECT action FROM review_log WHERE trade_id = ? ORDER BY created_at DESC LIMIT 1",
+            (trade_id,),
+        )
+        if not row:
+            return None
+        return row[0]
+
     # ──────────── Review Log ────────────
 
     async def save_review(
