@@ -323,7 +323,7 @@ class MT5Client:
                     tp=pos.tp,
                     profit=pos.profit,
                     swap=pos.swap,
-                    open_time=datetime.fromtimestamp(pos.time),
+                    open_time=datetime.utcfromtimestamp(pos.time),
                     magic=pos.magic,
                     comment=pos.comment,
                 )
@@ -352,7 +352,7 @@ class MT5Client:
                 tp=pos.tp,
                 profit=pos.profit,
                 swap=pos.swap,
-                open_time=datetime.fromtimestamp(pos.time),
+                open_time=datetime.utcfromtimestamp(pos.time),
                 magic=pos.magic,
                 comment=pos.comment,
             )
