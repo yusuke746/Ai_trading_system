@@ -161,7 +161,7 @@ class PositionMonitor:
             thesis = thesis_map.get(pos.ticket, {})
             hold_hours = 0
             if pos.open_time:
-                hold_hours = (datetime.utcnow() - pos.open_time).total_seconds() / 3600
+                hold_hours = (BrokerTime.now() - pos.open_time).total_seconds() / 3600
 
             # PnL pips計算
             point = 0.001 if "JPY" in pos.symbol else 0.00001
@@ -441,8 +441,7 @@ class PositionMonitor:
             # === Step 2: gpt-5.2 精密評価 ===
             hold_hours = 0
             if pos.open_time:
-                from datetime import datetime
-                hold_hours = (datetime.utcnow() - pos.open_time).total_seconds() / 3600
+                hold_hours = (BrokerTime.now() - pos.open_time).total_seconds() / 3600
 
             pos_data = {
                 "trade_id": trade_id,

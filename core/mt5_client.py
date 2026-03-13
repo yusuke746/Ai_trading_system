@@ -14,7 +14,7 @@ import MetaTrader5 as mt5
 import pandas as pd
 
 from config import CONFIG
-from core.broker_time import BrokerTime
+from core.broker_time import BrokerTime, XMT_TZ
 from core.models import OrderResult, PositionInfo, Direction
 from core.spread_tracker import SpreadTracker
 
@@ -323,7 +323,7 @@ class MT5Client:
                     tp=pos.tp,
                     profit=pos.profit,
                     swap=pos.swap,
-                    open_time=datetime.utcfromtimestamp(pos.time),
+                    open_time=datetime.utcfromtimestamp(pos.time).replace(tzinfo=XMT_TZ),
                     magic=pos.magic,
                     comment=pos.comment,
                 )
@@ -352,7 +352,7 @@ class MT5Client:
                 tp=pos.tp,
                 profit=pos.profit,
                 swap=pos.swap,
-                open_time=datetime.utcfromtimestamp(pos.time),
+                open_time=datetime.utcfromtimestamp(pos.time).replace(tzinfo=XMT_TZ),
                 magic=pos.magic,
                 comment=pos.comment,
             )
