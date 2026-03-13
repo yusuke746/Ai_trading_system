@@ -379,27 +379,37 @@ class PositionMonitor:
                     tp_distance = abs(tp - current)
                     entry_tp_distance = abs(tp - pos.open_price)
 
-                    # TP 80%到達
-                    if entry_tp_distance > 0 and tp_distance < entry_tp_distance * 0.3:
+                    # TP 50%到達 → nano一次審査をスキップして直接精密評価
+                    if entry_tp_distance > 0 and tp_distance <= entry_tp_distance * 0.5:
                         await self._trigger_layer2(
-                            pos, thesis, "TP近接70%"
+                            pos, thesis, "TP近接50%", use_nano_triage=False
                         )
 
                 # 急激な逆行チェック（ATRベース）
                 atr = self._get_thesis_atr(thesis)
                 if atr and atr > 0:
-                    # 含み損がATR×2以上
+                    # 含み損がATR×1.5以上
                     loss_distance = abs(current - pos.open_price)
                     if pos.profit < 0 and loss_distance > atr * 1.5:
                         await self._trigger_layer2(
-                            pos, thesis, "急激な逆行（ATR×1.5超）"
+                            pos, thesis, "急激な逆行（ATR×1.5超）", use_nano_triage=True
                         )
 
         except Exception as e:
             logger.error(f"価格近接チェックエラー: {e}")
 
-    async def _trigger_layer2(self, pos, thesis: dict, trigger_reason: str):
-        """Layer 2: ナノ一次審査 → gpt-5.2精密評価の2階層構成"""
+    async def _trigger_layer2(
+        self,
+        pos,
+        thesis: dict,
+        trigger_reason: str,
+        use_nano_triage: bool = True,
+    ):
+        """Layer 2評価。
+
+        - use_nano_triage=True: nano一次審査 → gpt-5.2精密評価
+        - use_nano_triage=False: nanoをスキップして gpt-5.2精密評価
+        """
         try:
             trade_id = thesis.get("trade_id", "N/A")
             point = 0.001 if "JPY" in pos.symbol else 0.00001
@@ -409,34 +419,41 @@ class PositionMonitor:
             if pos.direction == Direction.SHORT:
                 pnl_pips = -pnl_pips
 
-            # === Step 1: gpt-5-nano 一次審査 ===
-            triage_messages = self._prompt_builder.build_nano_triage_prompt(
-                trigger_reason=trigger_reason,
-                symbol=pos.symbol,
-                direction=pos.direction.value,
-                entry_price=pos.open_price,
-                current_price=pos.current_price,
-                pnl_pips=pnl_pips,
-                thesis_summary=thesis.get("thesis_text", "")[:150],
-                invalidation_conditions=thesis.get("invalidation", []),
-                tp=thesis.get("initial_tp", pos.tp),
-                sl=thesis.get("emergency_sl", pos.sl),
-            )
-
-            triage_result = await self._call_nano_triage(triage_messages)
-
-            if not triage_result or not triage_result.get("alert"):
-                # nanoが問題なしと判断 → スルー（コストほぼゼロ）
-                logger.debug(
-                    f"nano triage OK: {pos.symbol} {trade_id[:8]} - "
-                    f"{triage_result.get('reason', 'no issue') if triage_result else 'parse_fail'}"
+            nano_reason = "一次審査スキップ"
+            if use_nano_triage:
+                # === Step 1: gpt-5-nano 一次審査 ===
+                triage_messages = self._prompt_builder.build_nano_triage_prompt(
+                    trigger_reason=trigger_reason,
+                    symbol=pos.symbol,
+                    direction=pos.direction.value,
+                    entry_price=pos.open_price,
+                    current_price=pos.current_price,
+                    pnl_pips=pnl_pips,
+                    thesis_summary=thesis.get("thesis_text", "")[:150],
+                    invalidation_conditions=thesis.get("invalidation", []),
+                    tp=thesis.get("initial_tp", pos.tp),
+                    sl=thesis.get("emergency_sl", pos.sl),
                 )
-                return
 
-            nano_reason = triage_result.get("reason", "異常検知")
-            logger.info(
-                f"🚨 nano異常検知: {pos.symbol} {trade_id[:8]} - {nano_reason} → gpt-5.2精密評価へ"
-            )
+                triage_result = await self._call_nano_triage(triage_messages)
+
+                if not triage_result or not triage_result.get("alert"):
+                    # nanoが問題なしと判断 → スルー（コストほぼゼロ）
+                    logger.debug(
+                        f"nano triage OK: {pos.symbol} {trade_id[:8]} - "
+                        f"{triage_result.get('reason', 'no issue') if triage_result else 'parse_fail'}"
+                    )
+                    return
+
+                nano_reason = triage_result.get("reason", "異常検知")
+                logger.info(
+                    f"🚨 nano異常検知: {pos.symbol} {trade_id[:8]} - {nano_reason} → gpt-5.2精密評価へ"
+                )
+            else:
+                nano_reason = "TP近接50%到達のため一次審査をスキップ"
+                logger.info(
+                    f"🚨 直接精密評価: {pos.symbol} {trade_id[:8]} - {nano_reason}"
+                )
 
             # === Step 2: gpt-5.2 精密評価 ===
             hold_hours = 0
